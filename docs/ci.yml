@@ -1,0 +1,47 @@
+# 可选：GitHub Actions 配置
+#
+# 使用方法：把本文件复制到 `.github/workflows/ci.yml` 即可启用自动化测试。
+# 注意：创建/更新 workflow 文件要求推送令牌带 `workflow` 权限，
+# 否则 GitHub 会以 “refusing to allow a Personal Access Token to create or
+# update workflow” 拒绝推送；也可以直接在仓库网页端新建该文件。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: 语法检查
+        run: python -m compileall -q app web_app.py
+      - name: 运行单元测试
+        run: python -m unittest discover -s tests -t . -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 安装 ruff
+        run: pip install ruff
+      - name: 检查未定义名称等硬错误
+        run: ruff check --select E9,F app tests web_app.py
