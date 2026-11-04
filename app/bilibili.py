@@ -19,7 +19,6 @@ import requests
 from requests.cookies import RequestsCookieJar
 
 from .config import (
-    BASE_DIR,
     BILI_FNVAL,
     BILI_HEADERS,
     BILI_QN,
@@ -27,6 +26,7 @@ from .config import (
     PLAYURL_API,
     QUALITY_DESC,
     REQUEST_TIMEOUT,
+    RUNTIME_DIR,
     SELENIUM_LOGIN_TIMEOUT,
     TEST_API,
     VIEW_API,
@@ -386,9 +386,6 @@ def _cookies_to_jar(cookies: list[dict]) -> RequestsCookieJar:
 
 
 # ===================== 浏览器（自动登录） =====================
-RUNTIME_DIR = BASE_DIR / ".runtime"
-
-
 def _first_line(text: str, limit: int = 200) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     return lines[0][:limit] if lines else "未知错误"

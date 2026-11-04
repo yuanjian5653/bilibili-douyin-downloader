@@ -1,6 +1,6 @@
 # 双平台视频下载器（B站 + 抖音）
 
-[![Tests](https://img.shields.io/badge/tests-99%20passed-brightgreen)](tests)
+[![Tests](https://img.shields.io/badge/tests-111%20passed-brightgreen)](tests)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -28,7 +28,31 @@
   - 主地址失败自动切换备用 CDN 地址
   - 内置 FFmpeg（`imageio-ffmpeg`），无需手动安装
 - **浏览器驱动自动适配**：读取注册表里的 Edge / Chrome 版本并与本地驱动比对，主版本不一致时交给 Selenium Manager 自动下载匹配驱动（缓存也放在程序目录，受限账户下同样可用）；沙箱初始化失败时自动降级 `--no-sandbox`
-- **工程质量**：模块化拆分、类型标注、99 个不联网的单元测试
+- **单文件 exe**：PyInstaller 打包，双击自动开浏览器；数据（下载、Cookie、日志）留在 exe 同目录，重复双击会复用已有实例
+- **工程质量**：模块化拆分、类型标注、111 个不联网的单元测试
+
+---
+
+## ⬇️ 直接下载 exe（免安装，推荐）
+
+不想装 Python？到 [Releases](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/latest) 下载：
+
+| 文件 | 说明 |
+| --- | --- |
+| `VideoDownloader.exe` | **单文件版，推荐**。下载后双击即可，约 65 MB |
+| `VideoDownloader-portable-win64.zip` | 便携版（解压后运行里面的 `VideoDownloader.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
+
+启动后会**自动用默认浏览器打开界面** <http://127.0.0.1:5000>：
+
+1. 首次启动单文件版需要几秒解包，之后就能看到界面。
+2. 下载、Cookie、日志都保存在 exe 同目录（`downloads/`、`bilibili_cookies.pkl`、`app.log`、`.runtime/`）；
+   如果 exe 放在 `C:\Program Files` 这类不可写目录，会自动改用 `%LOCALAPPDATA%\VideoDownloader`。
+3. 重复双击不会报错：检测到端口已被占用时，直接把已运行的界面再打开一次。
+4. exe 没有代码签名，Windows SmartScreen 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可；
+   也可以按下面的方式从源码运行。
+
+> 想要与 Edge 版本严格匹配的驱动时，把 `msedgedriver.exe` 放在 exe 同目录，程序会优先使用它。
+> 如果单文件版启动时报 `Could not create temporary directory`（系统临时目录不可写），请改用便携版。
 
 ---
 
@@ -79,17 +103,17 @@ export FLASK_PORT=5050         # bash
 
 也可以复制 `.env.example` 为 `.env` 统一管理配置（需 `python-dotenv`，已包含在依赖里）。
 
-### 打包成 exe（可选）
+### 自行构建 exe
 
 ```bash
-pip install pyinstaller
-pyinstaller -F -w -n VideoDownloader ^
-  --add-data "app/templates;app/templates" ^
-  --add-data "app/static;app/static" ^
-  web_app.py
+pip install -r requirements-dev.txt      # 含 pyinstaller
+python scripts/make_icon.py              # 可选：重新生成图标
+python build_exe.py
 ```
 
-生成的程序在 `dist/VideoDownloader.exe`。若电脑上没有 Edge WebDriver，可把 `msedgedriver.exe` 放在 exe 同目录，程序会自动回退使用它。
+产物是单文件 `dist/VideoDownloader.exe`（约 60~90 MB，内含 Python 运行时、内置 FFmpeg 和浏览器驱动管理），双击即可用。打包配置在 `VideoDownloader.spec`：会把 `app/templates`、`app/static`、`imageio-ffmpeg` 的二进制一起收进去。
+
+> exe 使用窗口模式运行，没有控制台；运行日志写到同目录的 `app.log`。把 `msedgedriver.exe` 放在 exe 旁边即可优先使用它。
 
 ---
 
@@ -118,10 +142,16 @@ pyinstaller -F -w -n VideoDownloader ^
 
 ```
 biliblil_and_douyin_app/
-├── web_app.py                 # 启动入口（python web_app.py）
+├── web_app.py                 # 启动入口（python web_app.py / exe）
+├── build_exe.py               # 一键构建 exe
+├── VideoDownloader.spec       # PyInstaller 打包配置
+├── version_info.txt           # exe 文件属性（版本/产品名）
+├── app.ico                    # 图标
+├── scripts/make_icon.py       # 生成图标
 ├── app/
 │   ├── __init__.py            # Flask 应用工厂
 │   ├── config.py              # 全部配置（支持环境变量 / .env）
+│   ├── paths.py               # 程序目录 / 可写数据目录（兼容打包）
 │   ├── routes.py              # HTTP 接口与任务编排
 │   ├── state.py               # 全局状态、任务互斥、Cookie 缓存
 │   ├── events.py              # 事件总线（SSE 推送）

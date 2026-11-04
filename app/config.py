@@ -1,8 +1,9 @@
 """全局配置。
 
-所有配置项都可以通过环境变量覆盖，也支持项目根目录下的 ``.env`` 文件
-（需要安装 ``python-dotenv``）。相对路径统一相对于项目根目录解析，
-因此从任意工作目录启动都能找到 Cookie 文件与下载目录。
+所有配置项都可以通过环境变量覆盖，也支持项目根目录（或 exe 同目录）下的
+``.env`` 文件（需要安装 ``python-dotenv``）。相对路径统一相对于可写数据目录
+解析：未打包时是项目根目录，打包后是 exe 所在目录（不可写时退回用户目录），
+因此双击 exe 也能找到 Cookie 文件与下载目录。
 """
 
 from __future__ import annotations
@@ -10,18 +11,24 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .paths import app_dir, data_dir
+
 try:  # pragma: no cover - 可选依赖
     from dotenv import load_dotenv
 
+    load_dotenv(app_dir() / ".env")
     load_dotenv()
 except ImportError:  # pragma: no cover
     pass
 
 
 APP_NAME = "双平台视频下载器"
-VERSION = "3.1.3"
+VERSION = "3.2.0"
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# 程序目录（exe 所在目录 / 项目根目录）与可写数据目录
+BASE_DIR = app_dir()
+DATA_DIR = data_dir()
+RUNTIME_DIR = DATA_DIR / ".runtime"
 
 
 def _env_str(key: str, default: str) -> str:
@@ -53,10 +60,10 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 def resolve_path(raw: str | os.PathLike[str]) -> Path:
-    """把配置里的路径解析为绝对路径（相对路径基于项目根目录）。"""
+    """把配置里的路径解析为绝对路径（相对路径基于可写数据目录）。"""
     path = Path(raw).expanduser()
     if not path.is_absolute():
-        path = BASE_DIR / path
+        path = DATA_DIR / path
     return path
 
 

@@ -25,12 +25,23 @@ _RESERVED_NAMES = {
 
 
 def resource_path(relative_path: str) -> str:
-    """返回资源文件的绝对路径，兼容 PyInstaller 打包后的运行环境。"""
+    """返回资源文件的绝对路径。
+
+    打包后优先找 exe 同目录（便于用户放置自己的 ``msedgedriver.exe``），
+    再找 PyInstaller 解包目录；未打包时按项目根目录解析。
+    """
+    candidates = []
     if getattr(sys, "frozen", False):
-        base_path = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        candidates.append(Path(sys.executable).resolve().parent / relative_path)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / relative_path)
     else:
-        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
+        candidates.append(Path(__file__).resolve().parent.parent / relative_path)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
 
 
 def extract_first_url(text: str) -> str | None:
