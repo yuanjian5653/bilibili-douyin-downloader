@@ -210,6 +210,7 @@ biliblil_and_douyin_app/
 | 17 | 前端 `alert` 弹窗、按钮不置灰，重复点击会重复提交；SSE 断开无提示 | 改为 toast + 按钮禁用/加载态；连接状态提示，事件自动重连 |
 | 18 | `msedgedriver.exe`（23 MB）随仓库分发 | 加入 `.gitignore`，改由 Selenium Manager 自动下载，缺失时才回退本地文件 |
 | 19 | 自动登录在系统 TEMP 不可写时直接失败（`cannot create temp dir for user data dir`），且只尝试一种浏览器 | 登录时使用程序目录下 `.runtime` 的独立用户数据目录，并把驱动进程的 TEMP/TMP 一并重定向；按「本地 msedgedriver → Selenium Manager → Chrome」顺序回退，新会话先用空白页自检，失败原因回显到界面 |
+| 20 | 受限账户 / 安全软件下 Chromium 沙箱初始化失败，登录窗口报 `tab crashed`，且 Selenium Manager 会命中缓存里的旧版本驱动 | 每种浏览器失败后自动以 `--no-sandbox` 兼容模式重试一次，并用本地驱动的版本校验替代旧缓存驱动 |
 
 ---
 
@@ -243,7 +244,11 @@ ruff check app tests web_app.py
 ## ❓ 常见问题
 
 **Q：自动登录报 `cannot create temp dir for user data dir` / 浏览器打不开？**
-旧版会让 Edge 在系统 `TEMP` 下创建临时配置目录，TEMP 不可写时必然失败。新版把浏览器用户目录和 TEMP 都放到程序目录的 `.runtime/`（只在登录时临时使用，登录结束自动删除），并依次尝试「本地 `msedgedriver.exe` → Selenium Manager → Chrome」，新会话还会先加载空白页自检，失败原因会直接显示在日志里。如果程序所在目录也不可写（放在 `Program Files`、或在受限沙箱中运行），请从普通终端 / PyCharm 启动，或改用「验证并保存」直接粘贴 Cookie。
+旧版会让 Edge 在系统 `TEMP` 下创建临时配置目录，TEMP 不可写时必然失败。新版把浏览器用户目录和 TEMP 都放到程序目录的 `.runtime/`（只在登录时临时使用，登录结束自动删除），并依次尝试「本地 `msedgedriver.exe` → Selenium Manager → Chrome」，新会话还会先加载空白页自检，失败原因会直接显示在日志里。
+
+如果日志里出现 `tab crashed` 或 `session not created`：说明 Chromium 的进程沙箱在当前账户/安全软件下无法初始化，程序会自动改用 `--no-sandbox` 兼容模式再试一次（日志会显示 `+ --no-sandbox`，此时登录可正常使用）。日志里若显示 `Selenium Manager` 报缓存旧版本驱动，是因为程序优先用了本地驱动；两者版本不一致时保持本地驱动与浏览器同版本即可。
+
+如果程序所在目录也不可写（放在 `Program Files`、或在受限沙箱中运行），请从普通终端 / PyCharm 启动，或改用「验证并保存」直接粘贴 Cookie。
 
 **Q：自动登录窗口一直不弹出？**
 默认会等待 `SELENIUM_LOGIN_TIMEOUT`（300 秒）。若浏览器进程被安全软件拦截，日志里会给出具体原因；也可以在 `.env` 里把 `SELENIUM_LOGIN_TIMEOUT` 调小后重试。

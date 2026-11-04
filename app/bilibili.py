@@ -454,9 +454,13 @@ def _browser_args(profile_dir: Path, temp_dir: Path, headless: bool = False) -> 
 
 
 def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
-    """依次尝试 Edge（Selenium Manager）→ 本地 msedgedriver → Chrome。
+    """依次尝试「本地 msedgedriver → Selenium Manager → Chrome」。
 
-    返回可用的 WebDriver；全部失败时抛出 :class:`BiliError`，消息里带上每次尝试的原因。
+    每种浏览器先按正常参数启动，失败（尤其是 ``tab crashed`` / ``session not
+    created``）再以 ``--no-sandbox`` 兼容模式重试一次：部分受限账户、沙箱环境或
+    安全软件会让 Chromium 的进程沙箱初始化失败，关掉它才能启动。
+
+    返回可用的 WebDriver；全部失败时抛出 :class:`BiliError`，消息带上每次尝试的原因。
     """
     from selenium import webdriver
     from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -464,29 +468,31 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
 
     env = _service_env(temp_dir)
     local_driver = resource_path("msedgedriver.exe")
-    attempts: list[tuple[str, Callable[[], object]]] = []
+    attempts: list[tuple[str, Callable[[list[str]], object]]] = []
 
-    def edge_options() -> EdgeOptions:
+    def edge_options(extra: list[str]) -> EdgeOptions:
         options = EdgeOptions()
-        for arg in _browser_args(profile_dir, temp_dir, headless):
+        for arg in _browser_args(profile_dir, temp_dir, headless) + extra:
             options.add_argument(arg)
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         return options
 
-    attempts.append((
-        "Edge（Selenium Manager）",
-        lambda: webdriver.Edge(options=edge_options(), service=EdgeService(env=env)),
-    ))
     if Path(local_driver).exists():
-        # 本地驱动通常与已安装的浏览器版本匹配，优先尝试可避免 Selenium Manager
-        # 使用缓存里的旧版本驱动（或因无网络下载失败而卡住）
-        attempts.insert(0, (
+        # 本地驱动通常与已安装浏览器版本匹配，优先尝试可避免 Selenium Manager
+        # 命中缓存里的旧版本驱动（或因无法写缓存/无网络而失败）
+        attempts.append((
             "Edge（本地 msedgedriver）",
-            lambda: webdriver.Edge(
-                options=edge_options(),
+            lambda extra: webdriver.Edge(
+                options=edge_options(extra),
                 service=EdgeService(executable_path=local_driver, env=env),
             ),
         ))
+    attempts.append((
+        "Edge（Selenium Manager）",
+        lambda extra: webdriver.Edge(
+            options=edge_options(extra), service=EdgeService(env=env)
+        ),
+    ))
 
     try:
         from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -495,38 +501,42 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
         ChromeOptions = None  # type: ignore[assignment]
 
     if ChromeOptions is not None:
-        def chrome_options() -> "ChromeOptions":
+        def chrome_options(extra: list[str]) -> "ChromeOptions":
             options = ChromeOptions()
-            for arg in _browser_args(profile_dir, temp_dir, headless):
+            for arg in _browser_args(profile_dir, temp_dir, headless) + extra:
                 options.add_argument(arg)
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             return options
 
         attempts.append((
             "Chrome（Selenium Manager）",
-            lambda: webdriver.Chrome(options=chrome_options(), service=ChromeService(env=env)),
+            lambda extra: webdriver.Chrome(
+                options=chrome_options(extra), service=ChromeService(env=env)
+            ),
         ))
 
     errors: list[str] = []
-    for name, factory in attempts:
-        driver = None
-        try:
-            driver = factory()
-            # 浏览器有时能创建会话但窗口立刻退出，先加载空白页确认可用
-            driver.set_page_load_timeout(30)
-            driver.get("about:blank")
-        except Exception as exc:
-            reason = _first_line(str(exc))
-            errors.append(f"{name}：{reason}")
-            print(f"[bili] {name} 启动失败：{reason}", flush=True)
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            continue
-        print(f"[bili] 已启动浏览器：{name}", flush=True)
-        return driver
+    for name, opener in attempts:
+        for extra in ([], ["--no-sandbox"]):
+            label = name if not extra else f"{name} + --no-sandbox"
+            driver = None
+            try:
+                driver = opener(extra)
+                # 浏览器有时能创建会话但窗口立刻退出，先加载空白页确认可用
+                driver.set_page_load_timeout(30)
+                driver.get("about:blank")
+            except Exception as exc:
+                reason = _first_line(str(exc))
+                errors.append(f"{label}：{reason}")
+                print(f"[bili] {label} 启动失败：{reason}", flush=True)
+                if driver is not None:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                continue
+            print(f"[bili] 已启动浏览器：{label}", flush=True)
+            return driver
 
     raise BiliError("所有浏览器都启动失败，请手动粘贴 Cookie。原因：" + "；".join(errors))
 

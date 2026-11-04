@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bilibili-douyin-downloader"
-version = "3.1.1"
+version = "3.1.2"
 description = "B站 / 抖音视频下载器（带本地 Web 界面）"
 readme = "README.md"
 requires-python = ">=3.10"
