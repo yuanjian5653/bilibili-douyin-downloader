@@ -12,7 +12,12 @@ __pycache__/
 build/
 dist/
 .pkg/
-*.spec.bak
+# PyInstaller 自动生成的 spec（手写的 VideoDownloader.spec 需要保留）
+*.spec
+!VideoDownloader.spec
+vdd-*.txt
+of-*.txt
+port-*.txt
 
 # ===== 运行时生成 =====
 bilibili_cookies.pkl
