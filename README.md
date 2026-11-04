@@ -232,7 +232,9 @@ python -m pytest
 ruff check app tests web_app.py
 ```
 
-> 本地还附了一份 GitHub Actions 配置（`.github/workflows/ci.yml`），推送到仓库即可启用自动化测试。注意：创建或更新 workflow 文件的令牌必须带 `workflow` 权限，否则 GitHub 会拒绝推送。
+> 想启用 GitHub Actions？在仓库里添加 `.github/workflows/ci.yml`，内容就是执行上面的
+> `python -m unittest discover -s tests -t . -v` 即可。注意：创建或更新 workflow 文件的
+> 推送令牌必须带 `workflow` 权限，否则 GitHub 会拒绝推送。
 
 ---
 
