@@ -293,6 +293,13 @@ class BrowserDirTests(AppTestCase):
         self.assertEqual(env["TMP"], str(self.tmp_path))
         self.assertEqual(env["TMPDIR"], str(self.tmp_path))
 
+    def test_service_env_sets_selenium_cache(self):
+        temp = self.tmp_path / "temp"
+        temp.mkdir()
+        env = bilibili._service_env(temp)
+        self.assertEqual(env["SE_CACHE_PATH"], str(self.tmp_path / "selenium"))
+        self.assertTrue((self.tmp_path / "selenium").is_dir())
+
     def test_browser_args_include_own_profile(self):
         profile = self.tmp_path / "profile"
         temp = self.tmp_path / "temp"
@@ -304,6 +311,35 @@ class BrowserDirTests(AppTestCase):
     def test_browser_args_headless(self):
         args = bilibili._browser_args(self.tmp_path / "p", self.tmp_path / "t", headless=True)
         self.assertIn("--headless=new", args)
+
+
+class DriverVersionTests(AppTestCase):
+    """浏览器与驱动版本适配逻辑（纯函数，不启动浏览器）。"""
+
+    def test_parse_driver_version(self):
+        text = "Microsoft Edge WebDriver 156.0.4295.0 (c9bec3e8b0b7d3a552e2e009f7b72bccea065614)"
+        self.assertEqual(bilibili._parse_driver_version(text), "156.0.4295.0")
+        self.assertIsNone(bilibili._parse_driver_version("no version here"))
+        self.assertIsNone(bilibili._parse_driver_version(""))
+
+    def test_version_major(self):
+        self.assertEqual(bilibili._version_major("156.0.4295.0"), 156)
+        self.assertIsNone(bilibili._version_major(None))
+        self.assertIsNone(bilibili._version_major("abc"))
+        self.assertIsNone(bilibili._version_major(""))
+
+    def test_same_major(self):
+        self.assertIs(bilibili._same_major("156.0.4295.0", "156.0.4314.58"), True)
+        self.assertIs(bilibili._same_major("155.0.1.1", "156.0.4314.58"), False)
+        self.assertIsNone(bilibili._same_major(None, "156.0.1.1"))
+        self.assertIsNone(bilibili._same_major("156.0.1.1", None))
+
+    def test_detect_versions_never_crash(self):
+        for value in (bilibili.detect_edge_version(), bilibili.detect_chrome_version()):
+            self.assertTrue(value is None or isinstance(value, str))
+
+    def test_driver_version_missing_file(self):
+        self.assertIsNone(bilibili._driver_version(self.tmp_path / "nope.exe"))
 
 
 if __name__ == "__main__":

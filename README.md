@@ -27,6 +27,7 @@
   - 断点式临时文件：失败不会留下半截文件
   - 主地址失败自动切换备用 CDN 地址
   - 内置 FFmpeg（`imageio-ffmpeg`），无需手动安装
+- **浏览器驱动自动适配**：读取注册表里的 Edge / Chrome 版本并与本地驱动比对，主版本不一致时交给 Selenium Manager 自动下载匹配驱动（缓存也放在程序目录，受限账户下同样可用）；沙箱初始化失败时自动降级 `--no-sandbox`
 - **工程质量**：模块化拆分、类型标注、99 个不联网的单元测试
 
 ---
@@ -211,6 +212,7 @@ biliblil_and_douyin_app/
 | 18 | `msedgedriver.exe`（23 MB）随仓库分发 | 加入 `.gitignore`，改由 Selenium Manager 自动下载，缺失时才回退本地文件 |
 | 19 | 自动登录在系统 TEMP 不可写时直接失败（`cannot create temp dir for user data dir`），且只尝试一种浏览器 | 登录时使用程序目录下 `.runtime` 的独立用户数据目录，并把驱动进程的 TEMP/TMP 一并重定向；按「本地 msedgedriver → Selenium Manager → Chrome」顺序回退，新会话先用空白页自检，失败原因回显到界面 |
 | 20 | 受限账户 / 安全软件下 Chromium 沙箱初始化失败，登录窗口报 `tab crashed`，且 Selenium Manager 会命中缓存里的旧版本驱动 | 每种浏览器失败后自动以 `--no-sandbox` 兼容模式重试一次，并用本地驱动的版本校验替代旧缓存驱动 |
+| 21 | Edge 自动升级后本地 `msedgedriver.exe` 版本过期，登录必然失败；Selenium Manager 的默认缓存 `~/.cache/selenium` 又常写不进去 | 启动前比对注册表里的 Edge/Chrome 版本与本地驱动主版本：一致才优先本地驱动，不一致改由 Selenium Manager 下载匹配驱动；`SE_CACHE_PATH` 指向 `.runtime/selenium` |
 
 ---
 
@@ -242,6 +244,9 @@ ruff check app tests web_app.py
 ---
 
 ## ❓ 常见问题
+
+**Q：Edge 自动升级后自动登录失败？**
+程序每次登录都会读取注册表里的 Edge / Chrome 版本，与本地 `msedgedriver.exe` 比对主版本：一致就用本地驱动（快、离线可用），不一致则交给 Selenium Manager 下载匹配版本，缓存写在 `.runtime/selenium`，不会污染用户目录。日志第一行会打印 `检测到浏览器/驱动版本：Edge 157.x，本地驱动 156.x，Chrome 157.x`，可直接确认是否匹配。
 
 **Q：自动登录报 `cannot create temp dir for user data dir` / 浏览器打不开？**
 旧版会让 Edge 在系统 `TEMP` 下创建临时配置目录，TEMP 不可写时必然失败。新版把浏览器用户目录和 TEMP 都放到程序目录的 `.runtime/`（只在登录时临时使用，登录结束自动删除），并依次尝试「本地 `msedgedriver.exe` → Selenium Manager → Chrome」，新会话还会先加载空白页自检，失败原因会直接显示在日志里。

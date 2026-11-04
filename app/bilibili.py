@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -431,10 +433,104 @@ def prepare_browser_dirs(base_dir: Path | None = None, *,
 
 
 def _service_env(temp_dir: Path) -> dict[str, str]:
+    """给浏览器驱动进程准备环境变量。
+
+    * 把 ``TEMP/TMP/TMPDIR`` 指到可写目录，避免 ``cannot create temp dir``；
+    * 把 Selenium Manager 的驱动缓存 ``SE_CACHE_PATH`` 也放到程序目录，
+      受限账户/沙箱下默认的 ``~/.cache/selenium`` 往往写不进去，导致
+      “cache entry cannot be removed”，也无法在浏览器升级后自动下载新驱动。
+    """
     env = os.environ.copy()
     for key in ("TEMP", "TMP", "TMPDIR"):
         env[key] = str(temp_dir)
+    cache_dir = Path(temp_dir).parent / "selenium"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env["SE_CACHE_PATH"] = str(cache_dir)
+    except OSError:
+        pass
+    env.setdefault("SE_AVOID_STATS", "true")
     return env
+
+
+# ===================== 浏览器 / 驱动版本检测 =====================
+_DRIVER_VERSION_CACHE: dict[str, tuple[float, str | None]] = {}
+
+
+def _parse_driver_version(text: str) -> str | None:
+    match = re.search(r"(\d+\.\d+\.\d+\.\d+)", text or "")
+    return match.group(1) if match else None
+
+
+def _version_major(version: str | None) -> int | None:
+    try:
+        return int(str(version).split(".")[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_major(first: str | None, second: str | None) -> bool | None:
+    """两个版本号主版本是否一致；任一未知时返回 ``None``。"""
+    major_a, major_b = _version_major(first), _version_major(second)
+    if major_a is None or major_b is None:
+        return None
+    return major_a == major_b
+
+
+def _read_registry_version(paths: tuple[str, ...]) -> str | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover
+        return None
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for path in paths:
+            try:
+                with winreg.OpenKey(hive, path) as key:
+                    return str(winreg.QueryValueEx(key, "version")[0])
+            except OSError:
+                continue
+    return None
+
+
+def detect_edge_version() -> str | None:
+    """读取本机安装的 Edge 版本（注册表，失败返回 None）。"""
+    return _read_registry_version((
+        r"SOFTWARE\Microsoft\Edge\BLBeacon",
+        r"SOFTWARE\WOW6432Node\Microsoft\Edge\BLBeacon",
+    ))
+
+
+def detect_chrome_version() -> str | None:
+    """读取本机安装的 Chrome 版本（注册表，失败返回 None）。"""
+    return _read_registry_version((
+        r"SOFTWARE\Google\Update\Clients\{8A69D345-D564-463C-AFF1-A69D9E530F96}",
+        r"SOFTWARE\WOW6432Node\Google\Update\Clients\{8A69D345-D564-463C-AFF1-A69D9E530F96}",
+    ))
+
+
+def _driver_version(path: Path) -> str | None:
+    """执行 ``msedgedriver --version`` 读取驱动版本（按 mtime 缓存）。"""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cache_key = str(path).lower()
+    cached = _DRIVER_VERSION_CACHE.get(cache_key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        result = subprocess.run(
+            [str(path), "--version"], capture_output=True, text=True,
+            timeout=15, creationflags=creation_flags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    version = _parse_driver_version((result.stdout or "") + (result.stderr or ""))
+    _DRIVER_VERSION_CACHE[cache_key] = (mtime, version)
+    return version
 
 
 def _browser_args(profile_dir: Path, temp_dir: Path, headless: bool = False) -> list[str]:
@@ -467,7 +563,21 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
     from selenium.webdriver.edge.service import Service as EdgeService
 
     env = _service_env(temp_dir)
-    local_driver = resource_path("msedgedriver.exe")
+    local_driver = Path(resource_path("msedgedriver.exe"))
+    edge_version = detect_edge_version()
+    local_version = _driver_version(local_driver) if local_driver.exists() else None
+    chrome_version = detect_chrome_version()
+
+    detected = []
+    if edge_version:
+        detected.append(f"Edge {edge_version}")
+    if local_version:
+        detected.append(f"本地驱动 {local_version}")
+    if chrome_version:
+        detected.append(f"Chrome {chrome_version}")
+    if detected:
+        print("[bili] 检测到浏览器/驱动版本：" + "，".join(detected), flush=True)
+
     attempts: list[tuple[str, Callable[[list[str]], object]]] = []
 
     def edge_options(extra: list[str]) -> EdgeOptions:
@@ -477,22 +587,37 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         return options
 
-    if Path(local_driver).exists():
-        # 本地驱动通常与已安装浏览器版本匹配，优先尝试可避免 Selenium Manager
-        # 命中缓存里的旧版本驱动（或因无法写缓存/无网络而失败）
-        attempts.append((
+    local_attempt = None
+    if local_driver.exists():
+        local_attempt = (
             "Edge（本地 msedgedriver）",
             lambda extra: webdriver.Edge(
                 options=edge_options(extra),
-                service=EdgeService(executable_path=local_driver, env=env),
+                service=EdgeService(executable_path=str(local_driver), env=env),
             ),
-        ))
-    attempts.append((
+        )
+
+    sm_attempt = (
         "Edge（Selenium Manager）",
         lambda extra: webdriver.Edge(
             options=edge_options(extra), service=EdgeService(env=env)
         ),
-    ))
+    )
+
+    if local_attempt is not None:
+        if _same_major(local_version, edge_version) is False:
+            # 浏览器自动升级后本地驱动会过期，此时让 Selenium Manager 去下载匹配版本
+            print(
+                f"[bili] 本地驱动（{local_version}）与 Edge（{edge_version}）主版本不一致，"
+                "改为由 Selenium Manager 获取匹配驱动",
+                flush=True,
+            )
+            attempts.extend([sm_attempt, local_attempt])
+        else:
+            # 版本一致或无法判断时优先本地驱动：快，且不依赖网络
+            attempts.extend([local_attempt, sm_attempt])
+    else:
+        attempts.append(sm_attempt)
 
     try:
         from selenium.webdriver.chrome.options import Options as ChromeOptions
