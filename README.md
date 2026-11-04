@@ -1,6 +1,6 @@
 # 双平台视频下载器（B站 + 抖音）
 
-[![Tests](https://img.shields.io/badge/tests-93%20passed-brightgreen)](tests)
+[![Tests](https://img.shields.io/badge/tests-99%20passed-brightgreen)](tests)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -14,7 +14,7 @@
 
 - **浏览器界面**：深色主题、响应式布局，手机浏览器也能操作
 - **B站**
-  - 扫码登录（Edge）或手动粘贴 Cookie，Cookie 本地加密保存只需登录一次
+  - 扫码登录（自动尝试 Edge / Chrome）或手动粘贴 Cookie，Cookie 本地保存只需登录一次
   - 清晰度可选 360P ~ 8K，自动列出 AVC / HEVC / AV1 各编码
   - 完整视频 / 仅视频（无声） / 仅音频三种模式
   - 自动识别 `BV` 号、`av` 号、`?p=` 分P、`b23.tv` 短链
@@ -27,7 +27,7 @@
   - 断点式临时文件：失败不会留下半截文件
   - 主地址失败自动切换备用 CDN 地址
   - 内置 FFmpeg（`imageio-ffmpeg`），无需手动安装
-- **工程质量**：模块化拆分、类型标注、93 个不联网的单元测试
+- **工程质量**：模块化拆分、类型标注、99 个不联网的单元测试
 
 ---
 
@@ -209,6 +209,7 @@ biliblil_and_douyin_app/
 | 16 | `requirements.txt` 是 UTF-16 编码，且把整个虚拟环境的 50 多个无关包都当依赖 | 重写为 UTF-8，只保留 6 个真正用到的包 |
 | 17 | 前端 `alert` 弹窗、按钮不置灰，重复点击会重复提交；SSE 断开无提示 | 改为 toast + 按钮禁用/加载态；连接状态提示，事件自动重连 |
 | 18 | `msedgedriver.exe`（23 MB）随仓库分发 | 加入 `.gitignore`，改由 Selenium Manager 自动下载，缺失时才回退本地文件 |
+| 19 | 自动登录在系统 TEMP 不可写时直接失败（`cannot create temp dir for user data dir`），且只尝试一种浏览器 | 登录时使用程序目录下 `.runtime` 的独立用户数据目录，并把驱动进程的 TEMP/TMP 一并重定向；按「本地 msedgedriver → Selenium Manager → Chrome」顺序回退，新会话先用空白页自检，失败原因回显到界面 |
 
 ---
 
@@ -240,6 +241,12 @@ ruff check app tests web_app.py
 ---
 
 ## ❓ 常见问题
+
+**Q：自动登录报 `cannot create temp dir for user data dir` / 浏览器打不开？**
+旧版会让 Edge 在系统 `TEMP` 下创建临时配置目录，TEMP 不可写时必然失败。新版把浏览器用户目录和 TEMP 都放到程序目录的 `.runtime/`（只在登录时临时使用，登录结束自动删除），并依次尝试「本地 `msedgedriver.exe` → Selenium Manager → Chrome」，新会话还会先加载空白页自检，失败原因会直接显示在日志里。如果程序所在目录也不可写（放在 `Program Files`、或在受限沙箱中运行），请从普通终端 / PyCharm 启动，或改用「验证并保存」直接粘贴 Cookie。
+
+**Q：自动登录窗口一直不弹出？**
+默认会等待 `SELENIUM_LOGIN_TIMEOUT`（300 秒）。若浏览器进程被安全软件拦截，日志里会给出具体原因；也可以在 `.env` 里把 `SELENIUM_LOGIN_TIMEOUT` 调小后重试。
 
 **Q：B站解析出来只有 480P？**
 未登录时 B站只下发低清晰度。请先「自动登录」或粘贴有效 Cookie；大会员内容还需要对应账号权限。

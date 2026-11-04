@@ -265,5 +265,46 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(len(cookies_from_string(";;;")), 0)
 
 
+class BrowserDirTests(AppTestCase):
+    """自动登录用的浏览器目录与启动参数（不真正启动浏览器）。"""
+
+    def test_prepare_browser_dirs_creates_writable_dirs(self):
+        profile, temp = bilibili.prepare_browser_dirs(self.tmp_path)
+        self.assertTrue(profile.is_dir())
+        self.assertTrue(temp.is_dir())
+        self.assertTrue(str(profile).startswith(str(self.tmp_path)))
+        (temp / "probe.txt").write_text("ok", encoding="utf-8")
+        (profile / "probe.txt").write_text("ok", encoding="utf-8")
+
+    def test_prepare_browser_dirs_uses_unique_profile(self):
+        first, _ = bilibili.prepare_browser_dirs(self.tmp_path)
+        second, _ = bilibili.prepare_browser_dirs(self.tmp_path)
+        self.assertNotEqual(first, second)
+
+    def test_prepare_browser_dirs_raises_when_unwritable(self):
+        blocker = self.tmp_path / "blocked"
+        blocker.write_text("not a dir", encoding="utf-8")
+        with self.assertRaises(bilibili.BiliError):
+            bilibili.prepare_browser_dirs(blocker, fallback_to_temp=False)
+
+    def test_service_env_redirects_temp(self):
+        env = bilibili._service_env(self.tmp_path)
+        self.assertEqual(env["TEMP"], str(self.tmp_path))
+        self.assertEqual(env["TMP"], str(self.tmp_path))
+        self.assertEqual(env["TMPDIR"], str(self.tmp_path))
+
+    def test_browser_args_include_own_profile(self):
+        profile = self.tmp_path / "profile"
+        temp = self.tmp_path / "temp"
+        args = bilibili._browser_args(profile, temp)
+        self.assertIn(f"--user-data-dir={profile}", args)
+        self.assertIn(f"--disk-cache-dir={temp / 'cache'}", args)
+        self.assertNotIn("--headless=new", args)
+
+    def test_browser_args_headless(self):
+        args = bilibili._browser_args(self.tmp_path / "p", self.tmp_path / "t", headless=True)
+        self.assertIn("--headless=new", args)
+
+
 if __name__ == "__main__":
     unittest.main()

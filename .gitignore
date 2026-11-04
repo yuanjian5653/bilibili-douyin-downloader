@@ -17,6 +17,7 @@ dist/
 bilibili_cookies.pkl
 *.pkl
 downloads/
+.runtime/
 *.part
 *.m4s
 logs/

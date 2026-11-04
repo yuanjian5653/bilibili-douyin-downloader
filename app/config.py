@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
 
 
 APP_NAME = "双平台视频下载器"
-VERSION = "3.1.0"
+VERSION = "3.1.1"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import requests
 from requests.cookies import RequestsCookieJar
 
 from .config import (
+    BASE_DIR,
     BILI_FNVAL,
     BILI_HEADERS,
     BILI_QN,
@@ -377,35 +383,187 @@ def _cookies_to_jar(cookies: list[dict]) -> RequestsCookieJar:
     return jar
 
 
-def login_via_selenium(timeout: int = SELENIUM_LOGIN_TIMEOUT) -> RequestsCookieJar | None:
-    """打开 Edge 让用户扫码/登录，成功后返回 Cookie。"""
+# ===================== 浏览器（自动登录） =====================
+RUNTIME_DIR = BASE_DIR / ".runtime"
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[0][:limit] if lines else "未知错误"
+
+
+def _ensure_writable(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / f".probe-{os.getpid()}-{time.time_ns()}"
     try:
-        from selenium import webdriver
-        from selenium.webdriver.edge.options import Options as EdgeOptions
-        from selenium.webdriver.edge.service import Service as EdgeService
-    except ImportError:
-        print("[bili] 未安装 selenium，无法自动登录")
-        return None
+        probe.write_text("ok", encoding="utf-8")
+    finally:
+        probe.unlink(missing_ok=True)
+    return path
 
-    options = EdgeOptions()
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
+def prepare_browser_dirs(base_dir: Path | None = None, *,
+                         fallback_to_temp: bool = True) -> tuple[Path, Path]:
+    """创建浏览器专用的用户数据目录与临时目录。
+
+    msedgedriver / Edge 默认会在系统 ``TEMP`` 下创建临时用户目录，在 TEMP 不可写
+    （受限账户、清理策略、沙箱环境）时会直接失败：``cannot create temp dir for
+    user data dir``。这里改为写在程序目录的 ``.runtime`` 下，并让驱动进程的
+    ``TEMP/TMP/TMPDIR`` 也指向该目录；如果程序目录不可写，再退回系统临时目录。
+    """
+    base = Path(base_dir) if base_dir is not None else RUNTIME_DIR
+    base = base.expanduser().resolve()
+    candidates = [base]
+    if fallback_to_temp:
+        candidates.append(Path(tempfile.gettempdir()).resolve() / "video-downloader")
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            temp_dir = _ensure_writable(candidate / "temp")
+            profile_dir = _ensure_writable(candidate / f"profile-{uuid.uuid4().hex[:8]}")
+            return profile_dir, temp_dir
+        except OSError as exc:
+            errors.append(f"{candidate}（{_first_line(str(exc), 80)}）")
+    raise BiliError(
+        "无法创建浏览器临时目录，自动登录不可用。请从普通终端 / PyCharm 启动本程序，"
+        "或在界面里手动粘贴 Cookie。已尝试：" + "；".join(errors)
+    )
+
+
+def _service_env(temp_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        env[key] = str(temp_dir)
+    return env
+
+
+def _browser_args(profile_dir: Path, temp_dir: Path, headless: bool = False) -> list[str]:
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        f"--user-data-dir={profile_dir}",
+        f"--disk-cache-dir={Path(temp_dir) / 'cache'}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-sync",
+        "--window-size=1200,900",
+    ]
+    if headless:
+        args.append("--headless=new")
+    return args
+
+
+def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
+    """依次尝试 Edge（Selenium Manager）→ 本地 msedgedriver → Chrome。
+
+    返回可用的 WebDriver；全部失败时抛出 :class:`BiliError`，消息里带上每次尝试的原因。
+    """
+    from selenium import webdriver
+    from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.edge.service import Service as EdgeService
+
+    env = _service_env(temp_dir)
+    local_driver = resource_path("msedgedriver.exe")
+    attempts: list[tuple[str, Callable[[], object]]] = []
+
+    def edge_options() -> EdgeOptions:
+        options = EdgeOptions()
+        for arg in _browser_args(profile_dir, temp_dir, headless):
+            options.add_argument(arg)
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        return options
+
+    attempts.append((
+        "Edge（Selenium Manager）",
+        lambda: webdriver.Edge(options=edge_options(), service=EdgeService(env=env)),
+    ))
+    if Path(local_driver).exists():
+        # 本地驱动通常与已安装的浏览器版本匹配，优先尝试可避免 Selenium Manager
+        # 使用缓存里的旧版本驱动（或因无网络下载失败而卡住）
+        attempts.insert(0, (
+            "Edge（本地 msedgedriver）",
+            lambda: webdriver.Edge(
+                options=edge_options(),
+                service=EdgeService(executable_path=local_driver, env=env),
+            ),
+        ))
+
+    try:
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+        from selenium.webdriver.chrome.service import Service as ChromeService
+    except ImportError:  # pragma: no cover - 理论不会发生
+        ChromeOptions = None  # type: ignore[assignment]
+
+    if ChromeOptions is not None:
+        def chrome_options() -> "ChromeOptions":
+            options = ChromeOptions()
+            for arg in _browser_args(profile_dir, temp_dir, headless):
+                options.add_argument(arg)
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            return options
+
+        attempts.append((
+            "Chrome（Selenium Manager）",
+            lambda: webdriver.Chrome(options=chrome_options(), service=ChromeService(env=env)),
+        ))
+
+    errors: list[str] = []
+    for name, factory in attempts:
+        driver = None
+        try:
+            driver = factory()
+            # 浏览器有时能创建会话但窗口立刻退出，先加载空白页确认可用
+            driver.set_page_load_timeout(30)
+            driver.get("about:blank")
+        except Exception as exc:
+            reason = _first_line(str(exc))
+            errors.append(f"{name}：{reason}")
+            print(f"[bili] {name} 启动失败：{reason}", flush=True)
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            continue
+        print(f"[bili] 已启动浏览器：{name}", flush=True)
+        return driver
+
+    raise BiliError("所有浏览器都启动失败，请手动粘贴 Cookie。原因：" + "；".join(errors))
+
+
+def login_via_selenium(timeout: int = SELENIUM_LOGIN_TIMEOUT) -> RequestsCookieJar | None:
+    """打开浏览器让用户扫码/登录，成功后返回 Cookie。
+
+    与旧实现相比做了三件事：
+
+    * 使用程序目录下的独立用户数据目录与 TEMP，避免
+      ``cannot create temp dir for user data dir``；
+    * 依次尝试 Edge（Selenium Manager）→ 本地 msedgedriver → Chrome；
+    * 失败时抛出带原因的 :class:`BiliError`，而不是静默返回 ``None``。
+
+    登录超时返回 ``None``。
+    """
+    try:
+        from selenium import webdriver  # noqa: F401
+    except ImportError as exc:
+        raise BiliError("未安装 selenium，无法自动登录（pip install selenium）") from exc
+
+    profile_dir, temp_dir = prepare_browser_dirs()
     driver = None
     try:
+        driver = _start_browser(profile_dir, temp_dir)
         try:
-            driver = webdriver.Edge(options=options)
+            driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+        except Exception:
+            pass
+        try:
+            driver.set_page_load_timeout(60)
+            driver.get(LOGIN_URL)
         except Exception as exc:
-            print(f"[bili] Selenium Manager 启动失败：{exc}")
-            local_driver = resource_path("msedgedriver.exe")
-            if not Path(local_driver).exists():
-                return None
-            driver = webdriver.Edge(service=EdgeService(executable_path=local_driver),
-                                    options=options)
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        driver.get(LOGIN_URL)
+            raise BiliError(f"打开登录页失败：{_first_line(str(exc))}") from exc
+        print(f"[bili] 请在浏览器窗口中扫码或登录（最长等待 {timeout} 秒）", flush=True)
 
         # 轮询 Cookie，比只等 URL 变化更可靠（扫码登录不一定跳转）
         deadline = time.time() + timeout
@@ -421,14 +579,12 @@ def login_via_selenium(timeout: int = SELENIUM_LOGIN_TIMEOUT) -> RequestsCookieJ
                 jar = _cookies_to_jar(cookie_list)
                 if len(jar) > 0:
                     break
-        print("[bili] 已获取登录 Cookie" if jar else "[bili] 等待登录超时")
+        print("[bili] 已获取登录 Cookie" if jar else "[bili] 等待登录超时", flush=True)
         return jar
-    except Exception as exc:
-        print(f"[bili] 自动登录异常：{exc}")
-        return None
     finally:
         if driver is not None:
             try:
                 driver.quit()
             except Exception:
                 pass
+        shutil.rmtree(profile_dir, ignore_errors=True)

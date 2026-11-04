@@ -147,7 +147,7 @@ def bili_login():
     @_background("bili")
     def worker():
         try:
-            log("bili", "正在启动 Edge 浏览器，请在窗口中完成登录 ...")
+            log("bili", "正在启动浏览器，请在窗口中完成登录 ...")
             jar = bilibili.login_via_selenium()
             if not jar:
                 log("bili", "登录失败或超时，请重试或手动粘贴 Cookie", "error")
@@ -160,6 +160,9 @@ def bili_login():
             else:
                 log("bili", "已获取 Cookie，但校验未通过（可能未完成登录）", "warn")
             bus.publish("bili", {"type": "login_status", "value": logged_in})
+        except bilibili.BiliError as exc:
+            log("bili", f"自动登录失败：{exc}", "error")
+            bus.publish("bili", {"type": "login_status", "value": False})
         except Exception as exc:
             log("bili", f"登录异常：{exc}", "error")
             bus.publish("bili", {"type": "login_status", "value": False})
