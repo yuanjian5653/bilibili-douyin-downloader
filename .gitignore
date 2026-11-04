@@ -15,9 +15,12 @@ dist/
 # PyInstaller 自动生成的 spec（手写的 VideoDownloader.spec 需要保留）
 *.spec
 !VideoDownloader.spec
+*-out.txt
+*-err.txt
 vdd-*.txt
 of-*.txt
 port-*.txt
+p-*.txt
 
 # ===== 运行时生成 =====
 bilibili_cookies.pkl
