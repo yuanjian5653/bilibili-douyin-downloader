@@ -1,0 +1,7 @@
+# 运行依赖（仅包含程序真正会 import 的包）
+Flask>=3.0,<4.0
+requests>=2.31,<3.0
+selenium>=4.20,<5.0
+DrissionPage>=4.1,<5.0
+imageio-ffmpeg>=0.5,<1.0
+python-dotenv>=1.0,<2.0

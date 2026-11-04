@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ app_name or "双平台视频下载器" }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <h1>
+      <span class="logo">🎬</span>
+      双平台视频下载器
+    </h1>
+    <span class="version">v{{ version }} · Web</span>
+  </div>
+</header>
+
+<div class="container">
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="bili" role="tab" aria-selected="true">Bilibili</button>
+    <button class="tab" data-tab="douyin" role="tab" aria-selected="false">抖音</button>
+  </div>
+
+  <!-- ==================== B站面板 ==================== -->
+  <div class="panel active" id="panel-bili" role="tabpanel">
+
+    <div class="card">
+      <h3>登录 &amp; Cookie 管理</h3>
+      <div class="row">
+        <span class="status-bad" id="bili-status">检测中...</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button id="bili-login-btn" onclick="biliLogin()">🔑 自动登录 (Edge)</button>
+        <button class="secondary" id="bili-clear-btn" onclick="biliClear()">清除 Cookie</button>
+      </div>
+      <hr class="divider">
+      <div class="row">
+        <textarea id="bili-cookie-input" rows="2" placeholder="或手动粘贴 Cookie 字符串（SESSDATA=...）"></textarea>
+      </div>
+      <div class="row">
+        <button class="ghost" id="bili-cookie-btn" onclick="biliSaveCookie()">验证并保存</button>
+      </div>
+      <p class="hint">登录后可获取 1080P/4K 等更高清晰度；不登录也能解析，但通常限制在 480P。</p>
+    </div>
+
+    <div class="card">
+      <h3>1 · 输入视频链接并解析</h3>
+      <div class="row">
+        <input type="text" id="bili-url" placeholder="https://www.bilibili.com/video/BVxxxxxxxx"
+               autocomplete="off" spellcheck="false">
+        <button id="bili-parse-btn" onclick="biliParse()">🔍 解析</button>
+      </div>
+      <p class="hint" id="bili-title">视频标题：尚未解析</p>
+    </div>
+
+    <div class="card">
+      <h3>2 · 下载模式与选项</h3>
+      <div class="row">
+        <span class="row-label">模式</span>
+        <div class="radio-group">
+          <label><input type="radio" name="bili-mode" value="full" checked><span>完整视频</span></label>
+          <label><input type="radio" name="bili-mode" value="video_only"><span>仅视频(无声)</span></label>
+          <label><input type="radio" name="bili-mode" value="audio_only"><span>仅音频</span></label>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">清晰度</span>
+        <select id="bili-quality"></select>
+      </div>
+      <div class="row">
+        <span class="row-label">目录</span>
+        <input type="text" id="bili-dir" value="{{ download_dir }}">
+        <button class="ghost" onclick="browseDir('bili-dir')"
+                {% if not browse_enabled %}disabled title="已禁用目录选择"{% endif %}>浏览</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button class="primary-block" id="bili-download-btn" onclick="biliDownload()">⬇ 开始下载</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>进度与日志</h3>
+      <div class="progress"><div id="bili-progress"></div></div>
+      <p class="hint" id="bili-progress-text">等待开始</p>
+      <div class="log" id="bili-log"></div>
+      <div class="result" id="bili-result" hidden>
+        <span class="result-path" id="bili-result-path"></span>
+        <button class="ghost" onclick="revealFile('bili')">打开所在文件夹</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ==================== 抖音面板 ==================== -->
+  <div class="panel" id="panel-douyin" role="tabpanel">
+
+    <div class="card">
+      <h3>粘贴抖音分享内容</h3>
+      <div class="row">
+        <textarea id="douyin-text" rows="3" placeholder="从抖音 App 复制链接后粘贴到这里（可以带文字）"></textarea>
+      </div>
+      <div class="row">
+        <button id="douyin-parse-btn" onclick="douyinParse()">🔍 解析</button>
+      </div>
+      <p class="hint" id="douyin-title">视频标题：尚未解析</p>
+      <p class="hint">首次解析会启动浏览器，可能需要几秒；如提示需要验证，请在浏览器窗口内完成。</p>
+    </div>
+
+    <div class="card">
+      <h3>下载选项</h3>
+      <div class="row">
+        <span class="row-label">模式</span>
+        <div class="radio-group">
+          <label><input type="radio" name="douyin-mode" value="full" checked><span>完整视频</span></label>
+          <label><input type="radio" name="douyin-mode" value="audio_only"><span>仅音频</span></label>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">目录</span>
+        <input type="text" id="douyin-dir" value="{{ download_dir }}">
+        <button class="ghost" onclick="browseDir('douyin-dir')"
+                {% if not browse_enabled %}disabled title="已禁用目录选择"{% endif %}>浏览</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button class="primary-block" id="douyin-download-btn" onclick="douyinDownload()">⬇ 开始下载</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>进度与日志</h3>
+      <div class="progress"><div id="douyin-progress"></div></div>
+      <p class="hint" id="douyin-progress-text">等待开始</p>
+      <div class="log" id="douyin-log"></div>
+      <div class="result" id="douyin-result" hidden>
+        <span class="result-path" id="douyin-result-path"></span>
+        <button class="ghost" onclick="revealFile('douyin')">打开所在文件夹</button>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    本工具仅用于下载你拥有版权或已获授权的内容 · 服务只监听本机 {{ request.host }}
+    <span id="conn-status" class="conn">连接中...</span>
+  </footer>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
