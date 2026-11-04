@@ -76,6 +76,19 @@ def _quality_labels(options: list[dict]) -> list[str]:
     return labels
 
 
+def _prepare_download_dir(raw: str | None, platform: str) -> Path:
+    """校验保存目录：用户选的目录不可写时自动回退到默认下载目录。"""
+    requested = resolve_save_dir(raw)
+    try:
+        return ensure_dir(requested)
+    except ValueError as exc:
+        if Path(requested).resolve() == Path(DOWNLOAD_DIR).resolve():
+            raise
+        default = ensure_dir(DOWNLOAD_DIR)
+        log(platform, f"{exc} 已自动改用默认目录：{default}", "warn")
+        return default
+
+
 # ===================== 页面 =====================
 @bp.get("/")
 def index():
@@ -285,7 +298,7 @@ def bili_download():
     def worker():
         temp_files: list[Path] = []
         try:
-            directory = ensure_dir(resolve_save_dir(body.get("save_dir")))
+            directory = _prepare_download_dir(body.get("save_dir"), "bili")
             title = sanitize_filename(video["title"])
             options = video["options"]
             index = quality_index
@@ -388,7 +401,7 @@ def douyin_download():
     def worker():
         temp_files: list[Path] = []
         try:
-            directory = ensure_dir(resolve_save_dir(body.get("save_dir")))
+            directory = _prepare_download_dir(body.get("save_dir"), "douyin")
             title = sanitize_filename(info["title"])
             bus.publish("douyin", {"type": "progress", "value": 0})
             if mode == "full":

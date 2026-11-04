@@ -1,6 +1,7 @@
 # 双平台视频下载器（B站 + 抖音）
 
-[![Tests](https://img.shields.io/badge/tests-111%20passed-brightgreen)](tests)
+[![Download](https://img.shields.io/badge/download-exe%20%2865MB%29-brightgreen)](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/latest)
+[![Tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](tests)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -27,9 +28,10 @@
   - 断点式临时文件：失败不会留下半截文件
   - 主地址失败自动切换备用 CDN 地址
   - 内置 FFmpeg（`imageio-ffmpeg`），无需手动安装
+  - 保存目录写入探测：目录被系统/杀软保护时自动回退到默认目录并提示
 - **浏览器驱动自动适配**：读取注册表里的 Edge / Chrome 版本并与本地驱动比对，主版本不一致时交给 Selenium Manager 自动下载匹配驱动（缓存也放在程序目录，受限账户下同样可用）；沙箱初始化失败时自动降级 `--no-sandbox`
 - **单文件 exe**：PyInstaller 打包，双击自动开浏览器；数据（下载、Cookie、日志）留在 exe 同目录，重复双击会复用已有实例
-- **工程质量**：模块化拆分、类型标注、111 个不联网的单元测试
+- **工程质量**：模块化拆分、类型标注、114 个不联网的单元测试
 
 ---
 
@@ -39,8 +41,8 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `VideoDownloader.exe` | **单文件版，推荐**。下载后双击即可，约 65 MB |
-| `VideoDownloader-portable-win64.zip` | 便携版（解压后运行里面的 `VideoDownloader.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
+| [`VideoDownloader.exe`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.1/VideoDownloader.exe) | **单文件版，推荐**。下载后双击即可，约 65 MB |
+| [`VideoDownloader-portable-win64.zip`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.1/VideoDownloader-portable-win64.zip) | 便携版（解压后运行里面的 `VideoDownloaderPortable.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
 
 启动后会**自动用默认浏览器打开界面** <http://127.0.0.1:5000>：
 
@@ -287,6 +289,9 @@ ruff check app tests web_app.py
 
 **Q：自动登录窗口一直不弹出？**
 默认会等待 `SELENIUM_LOGIN_TIMEOUT`（300 秒）。若浏览器进程被安全软件拦截，日志里会给出具体原因；也可以在 `.env` 里把 `SELENIUM_LOGIN_TIMEOUT` 调小后重试。
+
+**Q：下载时报 `Permission denied` / 提示目录不可写？**
+程序在下载前会先做一次真实的写入探测。如果你选的目录被 Windows「受控文件夹访问」（勒索软件防护）或杀毒软件保护——`Downloads`、`Desktop`、`Documents` 默认就在保护范围内——会**自动回退到程序默认下载目录**并在日志里提示。想直接存到这些目录，请在「Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护 → 受控文件夹访问」里把 `VideoDownloader.exe` 加入允许列表，或在程序里「浏览」选一个普通目录（如 `D:\videos`）。
 
 **Q：B站解析出来只有 480P？**
 未登录时 B站只下发低清晰度。请先「自动登录」或粘贴有效 Cookie；大会员内容还需要对应账号权限。

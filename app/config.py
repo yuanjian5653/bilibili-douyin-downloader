@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover
 
 
 APP_NAME = "双平台视频下载器"
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 
 # 程序目录（exe 所在目录 / 项目根目录）与可写数据目录
 BASE_DIR = app_dir()

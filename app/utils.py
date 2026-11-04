@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -112,7 +113,11 @@ def resolve_save_dir(raw: str | None) -> Path:
 
 
 def ensure_dir(path: Path | str) -> Path:
-    """确保目录存在且可写，否则抛出带说明的 ValueError。"""
+    """确保目录存在且**真的可写**，否则抛出带说明的 ValueError。
+
+    Windows 上 ``os.access`` 对 ACL / 受控文件夹访问并不可靠，所以这里直接
+    创建并删除一个探针文件来验证写入权限。
+    """
     directory = Path(path).expanduser()
     if directory.exists() and not directory.is_dir():
         raise ValueError(f"保存路径不是文件夹：{directory}")
@@ -120,6 +125,19 @@ def ensure_dir(path: Path | str) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise ValueError(f"无法创建目录 {directory}：{exc}") from exc
-    if not os.access(directory, os.W_OK):
-        raise ValueError(f"目录不可写：{directory}")
+
+    probe = directory / f".write-probe-{os.getpid()}-{time.time_ns()}"
+    try:
+        probe.write_bytes(b"ok")
+    except OSError as exc:
+        raise ValueError(
+            f"目录不可写：{directory}（{exc.strerror or exc}）。"
+            "可能被 Windows「受控文件夹访问」或杀毒软件拦截，"
+            "请换一个保存目录，或在系统安全设置里允许本程序。"
+        ) from exc
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
     return directory

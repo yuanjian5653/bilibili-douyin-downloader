@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(3, 2, 0, 0),
-    prodvers=(3, 2, 0, 0),
+    filevers=(3, 2, 1, 0),
+    prodvers=(3, 2, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'yuanjian5653'),
             StringStruct('FileDescription', '双平台视频下载器 (B站 + 抖音)'),
-            StringStruct('FileVersion', '3.2.0.0'),
+            StringStruct('FileVersion', '3.2.1.0'),
             StringStruct('InternalName', 'VideoDownloader'),
             StringStruct('LegalCopyright', 'MIT License'),
             StringStruct('OriginalFilename', 'VideoDownloader.exe'),
             StringStruct('ProductName', '双平台视频下载器'),
-            StringStruct('ProductVersion', '3.2.0.0')
+            StringStruct('ProductVersion', '3.2.1.0')
           ]
         )
       ]

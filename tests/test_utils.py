@@ -88,6 +88,10 @@ class MiscUtilsTests(AppTestCase):
         with self.assertRaises(ValueError):
             ensure_dir(file_path)
 
+    def test_ensure_dir_leaves_no_probe_file(self):
+        directory = ensure_dir(self.tmp_path / "clean")
+        self.assertEqual(list(directory.iterdir()), [])
+
     def test_resolve_save_dir(self):
         raw = make_temp_dir("resolve-")
         self.addCleanup(shutil.rmtree, raw, True)

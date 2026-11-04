@@ -275,6 +275,38 @@ class RouteTests(AppTestCase):
     def test_reveal_rejects_missing_path(self):
         self.assertEqual(self.client.post("/api/reveal", json={}).status_code, 400)
 
+    # ---------- 保存目录可写性 ----------
+    def test_prepare_download_dir_falls_back_when_unwritable(self):
+        default = self.tmp_path / "default"
+        self.patch(routes, "DOWNLOAD_DIR", default)
+
+        def fake_ensure(path):
+            path = Path(path)
+            if path.name == "blocked":
+                raise ValueError(f"目录不可写：{path}")
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+        self.patch(routes, "ensure_dir", fake_ensure)
+        channel = bus.subscribe("bili")
+        result = routes._prepare_download_dir(str(self.tmp_path / "blocked"), "bili")
+        self.assertEqual(result, default)
+        message = channel.get_nowait()
+        self.assertEqual(message["type"], "log")
+        self.assertEqual(message["level"], "warn")
+        self.assertIn("默认目录", message["msg"])
+
+    def test_prepare_download_dir_reraises_for_default(self):
+        default = self.tmp_path / "default"
+        self.patch(routes, "DOWNLOAD_DIR", default)
+
+        def always_fail(path):
+            raise ValueError("目录不可写")
+
+        self.patch(routes, "ensure_dir", always_fail)
+        with self.assertRaises(ValueError):
+            routes._prepare_download_dir(str(default), "bili")
+
 
 if __name__ == "__main__":
     unittest.main()

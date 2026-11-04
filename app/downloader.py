@@ -126,6 +126,11 @@ def download_file(url: str, filepath: str | Path, desc: str, headers: dict[str, 
                 last_error = exc
                 part.unlink(missing_ok=True)
                 continue
+        if isinstance(last_error, PermissionError):
+            raise DownloadError(
+                f"无法写入文件：{last_error}。保存目录可能被系统或安全软件保护"
+                "（例如 Windows「受控文件夹访问」），请换一个目录后重试。"
+            )
         raise DownloadError(f"{desc}下载失败：{last_error}")
     finally:
         part.unlink(missing_ok=True)
