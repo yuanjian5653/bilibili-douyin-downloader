@@ -23,6 +23,7 @@
   - 直接粘贴「复制链接」得到的整段文案，自动提取链接
   - 无水印视频下载、音频单独提取
   - 接口捕获失败时自动回退解析页面内嵌数据
+  - 默认无头浏览器（不弹窗口），被风控拦时自动切可见窗口重试
 - **下载体验**
   - SSE 实时日志与进度条，终端和网页同步输出
   - 断点式临时文件：失败不会留下半截文件
@@ -41,8 +42,8 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| [`VideoDownloader.exe`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.2/VideoDownloader.exe) | **单文件版，推荐**。下载后双击即可，约 65 MB |
-| [`VideoDownloader-portable-win64.zip`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.2/VideoDownloader-portable-win64.zip) | 便携版（解压后运行里面的 `VideoDownloaderPortable.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
+| [`VideoDownloader.exe`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.3/VideoDownloader.exe) | **单文件版，推荐**。下载后双击即可，约 65 MB |
+| [`VideoDownloader-portable-win64.zip`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.3/VideoDownloader-portable-win64.zip) | 便携版（解压后运行里面的 `VideoDownloaderPortable.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
 
 启动后会**自动用默认浏览器打开界面** <http://127.0.0.1:5000>：
 
@@ -136,10 +137,10 @@ python build_exe.py --portable           # 便携版：dist/VideoDownloaderPorta
 ### 抖音
 
 1. 在抖音 App 里点「分享 → 复制链接」，把整段文案粘贴到文本框。
-2. 点「解析」，程序会启动浏览器并捕获作品数据（首次启动较慢）。
+2. 点「解析」，程序会在后台启动浏览器并捕获作品数据（首次启动较慢，默认无头，不弹窗口）。
 3. 选择「完整视频」或「仅音频」，点「开始下载」。
 
-> 如果提示需要验证，请在自动打开的浏览器窗口里完成一次验证/登录后再试；浏览器实例会复用，后续解析更快。
+> 抖音的数据只能由真实浏览器执行页面 JS 后拿到（接口带签名），所以解析时会在后台起一个 Edge。默认是无头模式，不占屏幕；如果无头被风控拦了（日志提示「无头模式没拿到视频数据」），会自动切到可见窗口重试一次，之后本次运行都直接用可见窗口。想强制可见可在 `.env` 里设 `DOUYIN_HEADLESS=0`。
 
 ---
 
@@ -216,13 +217,19 @@ biliblil_and_douyin_app/
 | `BILI_FNVAL` | `4048` | 期望的清晰度能力位（DASH+4K+HDR+杜比+8K+AV1） |
 | `DOUYIN_BROWSER_PORT` | `0` | `0` 为自动分配端口，避免和已开浏览器冲突 |
 | `DOUYIN_API_TIMEOUT` | `30` | 等待抖音数据接口的超时（秒） |
-| `DOUYIN_HEADLESS` | `0` | 抖音浏览器是否无头运行 |
+| `DOUYIN_HEADLESS` | `1` | 抖音浏览器是否无头运行（不弹窗口）；无头失败会自动切到可见窗口重试一次 |
 | `DOUYIN_BROWSER_PATH` | 空 | 指定浏览器路径，一般留空 |
 | `ENABLE_BROWSE_DIALOG` | `1` | 是否允许弹出目录选择框 |
 
 ---
 
 ## 🐞 已修复的问题
+
+### v3.2.3
+
+| # | 问题 | 修复方式 |
+| --- | --- | --- |
+| 25 | 抖音解析会弹出可见的浏览器窗口（默认 `DOUYIN_HEADLESS=0`），窗口解析完还一直留在桌面上 | 默认改为无头模式（不弹窗口）；无头窗口启动失败或拿不到数据（多半是风控验证）时自动切到可见窗口重试一次，并记住本次运行改用可见窗口，避免每次解析都先试一遍无头 |
 
 ### v3.2.2
 
@@ -314,7 +321,10 @@ v3.2.2 起会先探活再复用：发现窗口已被关掉会自动重启浏览�
 未登录时 B站只下发低清晰度。请先「自动登录」或粘贴有效 Cookie；大会员内容还需要对应账号权限。
 
 **Q：抖音解析一直超时？**
-首次启动浏览器较慢，或触发了风控验证。请把 `DOUYIN_HEADLESS=0`（默认）保持可见窗口，手动过一次验证后再解析；也可以调大 `DOUYIN_API_TIMEOUT`。
+首次启动浏览器较慢，或触发了风控验证。默认无头模式被拦时程序会自动切到可见窗口重试；如果一直失败，可以把 `DOUYIN_HEADLESS=0` 固定成可见窗口，手动过一次验证后再解析，也可以调大 `DOUYIN_API_TIMEOUT`。
+
+**Q：抖音解析为什么还要起浏览器？会弹窗口吗？**
+抖音的播放地址要靠浏览器执行页面 JS、从带签名的接口里取，所以解析时会起一个 Edge。默认是无头模式（不弹窗口）；如果无头被风控拦了，会自动切到可见窗口重试一次——这时会短暂弹窗，完成后可以手动关掉。想一直可见就把 `.env` 里的 `DOUYIN_HEADLESS` 改成 `0`。
 
 **Q：提示找不到 Edge WebDriver？**
 新版 Selenium 会自动下载驱动。若公司网络拦截，可手动下载与浏览器版本一致的 `msedgedriver.exe` 放到项目根目录。

@@ -205,12 +205,17 @@ def build_info(aweme: dict) -> DouyinInfo:
 
 # ===================== 浏览器（DrissionPage） =====================
 _page = None
+_page_headless: bool | None = None
+# 无头模式被风控拦过一次后，本次运行内直接用可见窗口，避免每次都先试一遍无头
+_prefer_visible = False
 _page_lock = threading.Lock()
 _fetch_lock = threading.Lock()
 
 
-def _build_page():
-    """创建 ChromiumPage；DrissionPage 延迟导入，避免拖慢启动速度。"""
+def _build_page(headless: bool | None = None):
+    """创建 ChromiumPage；``headless`` 为 None 时使用配置值。"""
+    if headless is None:
+        headless = DOUYIN_HEADLESS
     try:
         from DrissionPage import ChromiumOptions, ChromiumPage
     except ImportError as exc:  # pragma: no cover - 依赖缺失
@@ -221,8 +226,7 @@ def _build_page():
         options.set_local_port(DOUYIN_BROWSER_PORT)
     else:
         options.auto_port()  # 随机端口，避免与已运行的浏览器冲突
-    if DOUYIN_HEADLESS:
-        options.headless(True)
+    options.headless(bool(headless))
     if DOUYIN_BROWSER_PATH:
         options.set_browser_path(DOUYIN_BROWSER_PATH)
     options.set_argument("--disable-blink-features", "AutomationControlled")
@@ -261,27 +265,33 @@ def _page_alive(page) -> bool:
 
 def _dispose_page() -> None:
     """关闭并清空缓存的页面（调用方需持有 ``_page_lock``）。"""
-    global _page
-    if _page is None:
-        return
-    try:
-        _page.quit()
-    except Exception:
-        pass
+    global _page, _page_headless
+    if _page is not None:
+        try:
+            _page.quit()
+        except Exception:
+            pass
     _page = None
+    _page_headless = None
 
 
-def _get_page():
-    global _page
+def _get_page(headless: bool | None = None):
+    """返回可复用的页面；显示模式变化或窗口已关闭时重建。"""
+    global _page, _page_headless
+    desired = DOUYIN_HEADLESS if headless is None else bool(headless)
     with _page_lock:
         if _page is not None and not _page_alive(_page):
             log("douyin", "浏览器窗口已关闭，正在重新启动 ...", "warn")
             _dispose_page()
+        elif _page is not None and _page_headless != desired:
+            log("douyin", "正在切换抖音浏览器窗口模式（无头/可见）...", "warn")
+            _dispose_page()
         if _page is None:
             log("douyin", "正在启动浏览器（首次较慢）...")
-            _page = _build_page()
+            _page = _build_page(desired)
+            _page_headless = desired
             try:
-                if not DOUYIN_HEADLESS:
+                if not desired:
                     _page.set.window.max()
             except Exception:
                 pass
@@ -350,42 +360,87 @@ def _capture_aweme(page, url: str, platform: str) -> dict | None:
 
 
 def fetch_video_info(share_url: str, platform: str = "douyin") -> DouyinInfo:
-    """打开分享链接，捕获作品数据并返回无水印地址。"""
+    """打开分享链接，捕获作品数据并返回无水印地址。
+
+    默认用无头浏览器（不弹窗口）；无头模式拿不到数据（通常是触发风控验证）
+    时，自动切到可见窗口重试一次，并在本次运行内记住改用可见窗口。
+    """
+    global _prefer_visible
+
     url = extract_share_url(share_url)
     log(platform, f"提取到的链接：{url}")
 
     with _fetch_lock:  # 同一个页面不能并发操作
         aweme: dict | None = None
         failure: Exception | None = None
+        headless_unusable = False
         for attempt in (1, 2):
+            headless = DOUYIN_HEADLESS and not _prefer_visible and attempt == 1
             try:
-                page = _get_page()
+                page = _get_page(headless)
             except DouyinError:
                 raise
-            except Exception as exc:  # 浏览器启动失败：给出可读的原因
+            except Exception as exc:
+                if attempt == 1 and headless:
+                    # 无头窗口起不来（缺依赖/驱动、桌面限制等）：换可见窗口再试
+                    headless_unusable = True
+                    close_browser()
+                    log(
+                        platform,
+                        f"无头浏览器启动失败（{_first_line(str(exc))}），改用可见窗口重试 ...",
+                        "warn",
+                    )
+                    continue
                 raise DouyinError(f"浏览器启动失败：{exc}") from exc
-            log(platform, "正在打开页面并等待视频数据 ...")
+            log(
+                platform,
+                "正在打开页面并等待视频数据 ..." + ("（无头窗口）" if headless else ""),
+            )
             try:
                 aweme = _capture_aweme(page, url, platform)
                 failure = None
-                break
             except Exception as exc:  # 浏览器被关掉 / 页面崩溃 / 网络异常
                 failure = exc
+                aweme = None
                 close_browser()  # 页面状态可能异常，下次重建
                 if attempt == 1:
                     log(
                         platform,
-                        f"浏览器连接异常（{_first_line(str(exc))}），正在重启浏览器重试 ...",
+                        f"浏览器连接异常（{_first_line(str(exc))}），"
+                        + ("改用可见窗口重试 ..." if headless else "正在重启浏览器重试 ..."),
                         "warn",
                     )
+                    continue
+                break
+
+            if aweme is not None:
+                if attempt == 2 and headless_unusable and not _prefer_visible:
+                    _prefer_visible = True
+                    log(
+                        platform,
+                        "无头模式不可用，本次运行后续直接用可见窗口 ...",
+                        "warn",
+                    )
+                break
+
+            close_browser()
+            if attempt == 1 and headless:
+                headless_unusable = True
+                log(
+                    platform,
+                    "无头模式没拿到视频数据（可能触发了验证），改用可见窗口重试 ...",
+                    "warn",
+                )
+                continue
+            break
+
         if failure is not None:
             raise DouyinError(
-                "浏览器连接失败（窗口可能已被关闭），重启后仍失败："
+                "浏览器连接失败（窗口可能已被关闭），重试后仍失败："
                 f"{_first_line(str(failure))}"
             ) from failure
 
         if aweme is None:
-            close_browser()  # 页面状态可能异常，下次重建
             raise DouyinError(
                 "未获取到视频数据：可能需要登录/完成验证码，或链接已失效"
             )

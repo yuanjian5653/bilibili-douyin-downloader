@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover
 
 
 APP_NAME = "双平台视频下载器"
-VERSION = "3.2.2"
+VERSION = "3.2.3"
 
 # 程序目录（exe 所在目录 / 项目根目录）与可写数据目录
 BASE_DIR = app_dir()
@@ -118,7 +118,8 @@ QUALITY_DESC = {
 # 0 表示自动分配端口，避免和已运行的浏览器冲突
 DOUYIN_BROWSER_PORT = _env_int("DOUYIN_BROWSER_PORT", 0, minimum=0, maximum=65535)
 DOUYIN_API_TIMEOUT = _env_int("DOUYIN_API_TIMEOUT", 30, minimum=5)
-DOUYIN_HEADLESS = _env_bool("DOUYIN_HEADLESS", False)
+# 默认无头（不弹浏览器窗口）；无头解析失败时会自动切到可见窗口重试一次
+DOUYIN_HEADLESS = _env_bool("DOUYIN_HEADLESS", True)
 DOUYIN_BROWSER_PATH = _env_str("DOUYIN_BROWSER_PATH", "")
 
 # ===== 界面 =====

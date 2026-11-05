@@ -207,7 +207,7 @@ CLOSED_ERROR = RuntimeError("浏览器未开启或已关闭。\n版本: 4.1.1.4"
 class BrowserFlowTests(AppTestCase):
     def test_uses_api_packet(self):
         page = FakePage(packet=FakePacket({"aweme_detail": AWEME}))
-        self.patch(douyin, "_get_page", lambda: page)
+        self.patch(douyin, "_get_page", lambda *args, **kwargs: page)
         info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
         self.assertEqual(info.title, "一个测试作品")
         self.assertEqual(page.visited, "https://v.douyin.com/abc/")
@@ -216,13 +216,13 @@ class BrowserFlowTests(AppTestCase):
     def test_falls_back_to_html(self):
         html = EmbeddedDataTests._router_html(AWEME)
         page = FakePage(packet=None, html=html)
-        self.patch(douyin, "_get_page", lambda: page)
+        self.patch(douyin, "_get_page", lambda *args, **kwargs: page)
         info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
         self.assertEqual(info.aweme_id, AWEME["aweme_id"])
 
     def test_no_data_raises(self):
         page = FakePage(packet=None, html="<html>no data</html>")
-        self.patch(douyin, "_get_page", lambda: page)
+        self.patch(douyin, "_get_page", lambda *args, **kwargs: page)
         with self.assertRaises(DouyinError):
             douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
 
@@ -233,22 +233,40 @@ class PageLifecycleTests(AppTestCase):
     def test_alive_page_is_reused(self):
         page = FakePage()
         self.patch(douyin, "_page", page)
+        self.patch(douyin, "_page_headless", bool(douyin.DOUYIN_HEADLESS))
         self.patch(douyin, "_build_page", self._fail_build)
         self.assertIs(douyin._get_page(), page)
 
     @staticmethod
-    def _fail_build():
+    def _fail_build(headless=None):
         raise AssertionError("页面可用时不应该重建浏览器")
 
     def test_closed_browser_is_rebuilt(self):
         dead = FakePage(alive=False)
         fresh = FakePage()
         self.patch(douyin, "_page", dead)
-        self.patch(douyin, "_build_page", lambda: fresh)
+        self.patch(douyin, "_build_page", lambda headless=None: fresh)
 
         self.assertIs(douyin._get_page(), fresh)
         self.assertTrue(dead.quit_called)
         self.assertIs(douyin._page, fresh)
+
+    def test_mode_switch_rebuilds_browser(self):
+        old = FakePage()
+        built: list[bool] = []
+
+        def build(headless=None):
+            built.append(headless)
+            return FakePage()
+
+        self.patch(douyin, "_page", old)
+        self.patch(douyin, "_page_headless", True)
+        self.patch(douyin, "_build_page", build)
+
+        page = douyin._get_page(False)
+        self.assertIsNot(page, old)
+        self.assertTrue(old.quit_called)
+        self.assertEqual(built, [False])
 
     def test_closed_tab_is_detected(self):
         page = FakePage(tab_id="tab-1", tab_ids=("tab-2",))
@@ -267,7 +285,7 @@ class BrowserRecoveryTests(AppTestCase):
         dead = FakePage(listen_error=CLOSED_ERROR)
         healthy = FakePage(packet=FakePacket({"aweme_detail": AWEME}))
         pages = [dead, healthy]
-        self.patch(douyin, "_get_page", lambda: pages.pop(0))
+        self.patch(douyin, "_get_page", lambda *args, **kwargs: pages.pop(0))
         self.patch(douyin, "close_browser", lambda: None)
 
         info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
@@ -276,7 +294,7 @@ class BrowserRecoveryTests(AppTestCase):
 
     def test_reports_clear_error_after_second_failure(self):
         pages = [FakePage(listen_error=CLOSED_ERROR), FakePage(listen_error=CLOSED_ERROR)]
-        self.patch(douyin, "_get_page", lambda: pages.pop(0))
+        self.patch(douyin, "_get_page", lambda *args, **kwargs: pages.pop(0))
         self.patch(douyin, "close_browser", lambda: None)
 
         with self.assertRaises(DouyinError) as ctx:
@@ -286,13 +304,94 @@ class BrowserRecoveryTests(AppTestCase):
         self.assertIn("浏览器未开启或已关闭", message)
 
     def test_reports_browser_start_failure(self):
-        def broken_page():
+        def broken_page(*args, **kwargs):
             raise RuntimeError("浏览器连接失败。\n地址: 127.0.0.1:1")
 
         self.patch(douyin, "_get_page", broken_page)
         with self.assertRaises(DouyinError) as ctx:
             douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
         self.assertIn("浏览器启动失败", str(ctx.exception))
+
+
+class HeadlessFallbackTests(AppTestCase):
+    """默认无头；拿不到数据时切可见窗口重试，并记住本次运行改用可见窗口。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.patch(douyin, "DOUYIN_HEADLESS", True)
+        self.patch(douyin, "_prefer_visible", False)
+        self.patch(douyin, "_page_headless", None)
+
+    def _pages(self, *items) -> list[bool | None]:
+        pages = list(items)
+        calls: list[bool | None] = []
+
+        def get_page(headless=None):
+            calls.append(headless)
+            return pages.pop(0)
+
+        self.patch(douyin, "_get_page", get_page)
+        self.patch(douyin, "close_browser", lambda: None)
+        return calls
+
+    def test_headless_success_keeps_headless(self):
+        calls = self._pages(FakePage(packet=FakePacket({"aweme_detail": AWEME})))
+        douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(calls, [True])
+        self.assertFalse(douyin._prefer_visible)
+
+    def test_no_data_falls_back_to_visible(self):
+        calls = self._pages(
+            FakePage(packet=None, html="<html>no data</html>"),
+            FakePage(packet=FakePacket({"aweme_detail": AWEME})),
+        )
+        info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(info.aweme_id, AWEME["aweme_id"])
+        self.assertTrue(douyin._prefer_visible)
+
+    def test_connection_error_falls_back_but_not_sticky(self):
+        calls = self._pages(
+            FakePage(listen_error=CLOSED_ERROR),
+            FakePage(packet=FakePacket({"aweme_detail": AWEME})),
+        )
+        info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(info.aweme_id, AWEME["aweme_id"])
+        self.assertFalse(douyin._prefer_visible)
+
+    def test_prefer_visible_skips_headless(self):
+        self.patch(douyin, "_prefer_visible", True)
+        calls = self._pages(FakePage(packet=FakePacket({"aweme_detail": AWEME})))
+        douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(calls, [False])
+
+    def test_headless_start_failure_falls_back_to_visible(self):
+        calls: list[bool | None] = []
+        pages = [FakePage(packet=FakePacket({"aweme_detail": AWEME}))]
+
+        def get_page(headless=None):
+            calls.append(headless)
+            if headless:
+                raise RuntimeError("浏览器连接失败。\n地址: 127.0.0.1:1")
+            return pages.pop(0)
+
+        self.patch(douyin, "_get_page", get_page)
+        self.patch(douyin, "close_browser", lambda: None)
+
+        info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(info.aweme_id, AWEME["aweme_id"])
+        self.assertTrue(douyin._prefer_visible)
+
+    def test_missing_dependency_is_not_retried(self):
+        def get_page(*args, **kwargs):
+            raise DouyinError("未安装 DrissionPage，请执行 pip install DrissionPage")
+
+        self.patch(douyin, "_get_page", get_page)
+        with self.assertRaises(DouyinError) as ctx:
+            douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertIn("DrissionPage", str(ctx.exception))
 
 
 if __name__ == "__main__":
