@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：生成单文件 VideoDownloader.exe。
+"""PyInstaller 打包配置：生成单文件 ``dist/VideoDownloader.exe``。
 
 用法::
 
@@ -14,14 +14,16 @@ datas = [
 ]
 # imageio-ffmpeg 自带 ffmpeg 可执行文件，必须一起打包
 datas += collect_data_files("imageio_ffmpeg")
+# selenium 的 Selenium Manager 可执行文件在包内，缺了自动登录就没法下载驱动
+datas += collect_data_files("selenium")
 
-hiddenimports = collect_submodules("DrissionPage")
-hiddenimports += [
-    "selenium.webdriver.edge.service",
-    "selenium.webdriver.edge.options",
-    "selenium.webdriver.chrome.service",
-    "selenium.webdriver.chrome.options",
-]
+# selenium 4.x 的 selenium.webdriver 包是惰性导入（_LAZY_IMPORTS + __getattr__）：
+# webdriver.Edge / webdriver.Chrome 只是字典里的字符串，PyInstaller 的静态分析
+# 看不到 selenium.webdriver.edge.webdriver 之类的模块，打包后会报
+# “No module named 'selenium.webdriver.edge.webdriver'”（Edge 与 Chrome 同时失效）。
+# 因此这里显式收集全部子模块，配合 app/bilibili.py 里的全路径 import。
+hiddenimports = collect_submodules("selenium")
+hiddenimports += collect_submodules("DrissionPage")
 
 a = Analysis(
     ["web_app.py"],

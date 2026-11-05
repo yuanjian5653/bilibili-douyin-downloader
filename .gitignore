@@ -12,9 +12,10 @@ __pycache__/
 build/
 dist/
 .pkg/
-# PyInstaller 自动生成的 spec（手写的 VideoDownloader.spec 需要保留）
+# PyInstaller 自动生成的 spec（手写的 spec 需要保留）
 *.spec
 !VideoDownloader.spec
+!VideoDownloaderPortable.spec
 *-out.txt
 *-err.txt
 vdd-*.txt

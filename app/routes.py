@@ -23,7 +23,6 @@ from .config import (
     VERSION,
 )
 from .downloader import (
-    DownloadError,
     create_session,
     download_file,
     extract_audio,

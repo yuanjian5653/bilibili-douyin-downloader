@@ -230,9 +230,53 @@ def _build_page():
     return ChromiumPage(options)
 
 
+def _first_line(text: str, limit: int = 160) -> str:
+    """DrissionPage 的错误信息常带换行和版本号，只取第一行用于界面展示。"""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[0][:limit] if lines else "未知错误"
+
+
+def _page_alive(page) -> bool:
+    """复用的浏览器页面是否还能用。
+
+    用户手动关掉抖音的浏览器窗口后，DrissionPage 的页面对象仍然存在，但 CDP
+    连接已经断开：这时 ``page.listen.start()`` 会抛「浏览器未开启或已关闭」。
+    因此每次复用前都先探活，失效就重建。
+    """
+    if page is None:
+        return False
+    try:
+        if not page.states.is_alive:
+            return False
+    except Exception:
+        return False
+    try:
+        tab_ids = page.browser.tab_ids
+    except Exception:
+        return True  # 查不到标签页列表时交给后续流程判断，避免误重启
+    if tab_ids and getattr(page, "tab_id", None) not in tab_ids:
+        return False
+    return True
+
+
+def _dispose_page() -> None:
+    """关闭并清空缓存的页面（调用方需持有 ``_page_lock``）。"""
+    global _page
+    if _page is None:
+        return
+    try:
+        _page.quit()
+    except Exception:
+        pass
+    _page = None
+
+
 def _get_page():
     global _page
     with _page_lock:
+        if _page is not None and not _page_alive(_page):
+            log("douyin", "浏览器窗口已关闭，正在重新启动 ...", "warn")
+            _dispose_page()
         if _page is None:
             log("douyin", "正在启动浏览器（首次较慢）...")
             _page = _build_page()
@@ -246,14 +290,8 @@ def _get_page():
 
 def close_browser() -> None:
     """关闭复用的浏览器实例。"""
-    global _page
     with _page_lock:
-        if _page is not None:
-            try:
-                _page.quit()
-            except Exception:
-                pass
-            _page = None
+        _dispose_page()
 
 
 atexit.register(close_browser)
@@ -283,46 +321,68 @@ def _aweme_from_packet(body: dict) -> dict | None:
     return _find_aweme(body)
 
 
+def _capture_aweme(page, url: str, platform: str) -> dict | None:
+    """打开分享页，优先用接口监听捕获作品数据，失败时解析页面内嵌数据。"""
+    page.listen.start(DOUYIN_DETAIL_API, method="GET")
+    try:
+        page.get(url)
+        try:
+            page.wait.doc_loaded(timeout=DOUYIN_API_TIMEOUT)
+        except Exception:
+            pass
+        package = page.listen.wait(timeout=DOUYIN_API_TIMEOUT)
+        if isinstance(package, list):
+            package = package[0] if package else None
+        aweme = None
+        if package is not None:
+            body = _packet_body(package)
+            if body:
+                aweme = _aweme_from_packet(body)
+        if aweme is None:
+            log(platform, "未捕获接口数据，尝试解析页面内嵌数据 ...", "warn")
+            aweme = find_aweme_from_html(page.html or "")
+        return aweme
+    finally:
+        try:
+            page.listen.stop()
+        except Exception:
+            pass
+
+
 def fetch_video_info(share_url: str, platform: str = "douyin") -> DouyinInfo:
     """打开分享链接，捕获作品数据并返回无水印地址。"""
     url = extract_share_url(share_url)
     log(platform, f"提取到的链接：{url}")
 
     with _fetch_lock:  # 同一个页面不能并发操作
-        page = _get_page()
-        log(platform, "正在打开页面并等待视频数据 ...")
-        try:
-            page.listen.start(DOUYIN_DETAIL_API, method="GET")
-        except Exception as exc:
-            raise DouyinError(f"监听接口失败：{exc}") from exc
-
-        package = None
-        aweme = None
-        try:
-            page.get(url)
+        aweme: dict | None = None
+        failure: Exception | None = None
+        for attempt in (1, 2):
             try:
-                page.wait.doc_loaded(timeout=DOUYIN_API_TIMEOUT)
-            except Exception:
-                pass
-            package = page.listen.wait(timeout=DOUYIN_API_TIMEOUT)
-            if isinstance(package, list):
-                package = package[0] if package else None
-            if package is not None:
-                body = _packet_body(package)
-                if body:
-                    aweme = _aweme_from_packet(body)
-            if aweme is None:
-                log(platform, "未捕获接口数据，尝试解析页面内嵌数据 ...", "warn")
-                aweme = find_aweme_from_html(page.html or "")
-        except DouyinError:
-            raise
-        except Exception as exc:
-            raise DouyinError(f"访问抖音页面失败：{exc}") from exc
-        finally:
+                page = _get_page()
+            except DouyinError:
+                raise
+            except Exception as exc:  # 浏览器启动失败：给出可读的原因
+                raise DouyinError(f"浏览器启动失败：{exc}") from exc
+            log(platform, "正在打开页面并等待视频数据 ...")
             try:
-                page.listen.stop()
-            except Exception:
-                pass
+                aweme = _capture_aweme(page, url, platform)
+                failure = None
+                break
+            except Exception as exc:  # 浏览器被关掉 / 页面崩溃 / 网络异常
+                failure = exc
+                close_browser()  # 页面状态可能异常，下次重建
+                if attempt == 1:
+                    log(
+                        platform,
+                        f"浏览器连接异常（{_first_line(str(exc))}），正在重启浏览器重试 ...",
+                        "warn",
+                    )
+        if failure is not None:
+            raise DouyinError(
+                "浏览器连接失败（窗口可能已被关闭），重启后仍失败："
+                f"{_first_line(str(failure))}"
+            ) from failure
 
         if aweme is None:
             close_browser()  # 页面状态可能异常，下次重建

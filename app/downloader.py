@@ -15,7 +15,6 @@ from urllib3.util.retry import Retry
 
 from .config import (
     DOWNLOAD_CHUNK_SIZE,
-    DOWNLOAD_RETRIES,
     DOWNLOAD_TIMEOUT,
     PROGRESS_INTERVAL,
 )

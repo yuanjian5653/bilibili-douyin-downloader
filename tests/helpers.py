@@ -11,10 +11,10 @@ import contextlib
 import queue
 import shutil
 import sys
-import tempfile
 import threading
 import time
 import unittest
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -30,8 +30,22 @@ PAYLOAD = b"x" * (256 * 1024 + 17)
 
 
 def make_temp_dir(name: str = "case-") -> Path:
+    """在项目内创建唯一的临时目录。
+
+    特意不用 ``tempfile.mkdtemp``：它以 ``0o700`` 创建目录，在受限令牌（沙箱、
+    服务账户）下会生成「只有 owner」的安全描述符，当前进程反而写不进去，
+    于是所有落盘用例都会报 ``Permission denied``。用系统默认权限创建，并自己
+    保证目录名唯一。
+    """
     TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=name, dir=str(TEMP_ROOT)))
+    for _ in range(100):
+        candidate = TEMP_ROOT / f"{name}{uuid.uuid4().hex[:8]}"
+        try:
+            candidate.mkdir()
+            return candidate
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"无法在 {TEMP_ROOT} 下创建临时目录")
 
 
 class _PayloadHandler(BaseHTTPRequestHandler):

@@ -41,8 +41,8 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| [`VideoDownloader.exe`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.1/VideoDownloader.exe) | **单文件版，推荐**。下载后双击即可，约 65 MB |
-| [`VideoDownloader-portable-win64.zip`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.1/VideoDownloader-portable-win64.zip) | 便携版（解压后运行里面的 `VideoDownloaderPortable.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
+| [`VideoDownloader.exe`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.2/VideoDownloader.exe) | **单文件版，推荐**。下载后双击即可，约 65 MB |
+| [`VideoDownloader-portable-win64.zip`](https://github.com/yuanjian5653/bilibili-douyin-downloader/releases/download/v3.2.2/VideoDownloader-portable-win64.zip) | 便携版（解压后运行里面的 `VideoDownloaderPortable.exe`），启动更快、不依赖系统临时目录，适合杀软较严或单文件版打不开的机器 |
 
 启动后会**自动用默认浏览器打开界面** <http://127.0.0.1:5000>：
 
@@ -110,10 +110,13 @@ export FLASK_PORT=5050         # bash
 ```bash
 pip install -r requirements-dev.txt      # 含 pyinstaller
 python scripts/make_icon.py              # 可选：重新生成图标
-python build_exe.py
+python build_exe.py                      # 单文件版：dist/VideoDownloader.exe
+python build_exe.py --portable           # 便携版：dist/VideoDownloaderPortable/
 ```
 
-产物是单文件 `dist/VideoDownloader.exe`（约 60~90 MB，内含 Python 运行时、内置 FFmpeg 和浏览器驱动管理），双击即可用。打包配置在 `VideoDownloader.spec`：会把 `app/templates`、`app/static`、`imageio-ffmpeg` 的二进制一起收进去。
+单文件版产物是 `dist/VideoDownloader.exe`（约 60~90 MB，内含 Python 运行时、内置 FFmpeg 和浏览器驱动管理），双击即可用；便携版是同目录下的 exe + `_internal`，启动更快，发布时把整个目录压成 zip 即可。打包配置分别在 `VideoDownloader.spec` / `VideoDownloaderPortable.spec`：会把 `app/templates`、`app/static`、`imageio-ffmpeg` 的二进制一起收进去。
+
+> selenium 4 的 `selenium.webdriver` 是惰性导入（`_LAZY_IMPORTS`），PyInstaller 静态分析看不到 `selenium.webdriver.edge.webdriver` 之类的子模块。两个 spec 都用 `collect_submodules("selenium")` 显式收集，漏掉的话打包版会报 `No module named 'selenium.webdriver.edge.webdriver'`，Edge / Chrome 自动登录一起失效。
 
 > exe 使用窗口模式运行，没有控制台；运行日志写到同目录的 `app.log`。把 `msedgedriver.exe` 放在 exe 旁边即可优先使用它。
 
@@ -145,8 +148,9 @@ python build_exe.py
 ```
 biliblil_and_douyin_app/
 ├── web_app.py                 # 启动入口（python web_app.py / exe）
-├── build_exe.py               # 一键构建 exe
-├── VideoDownloader.spec       # PyInstaller 打包配置
+├── build_exe.py               # 一键构建 exe（--portable 构建便携版）
+├── VideoDownloader.spec       # PyInstaller 打包配置（单文件）
+├── VideoDownloaderPortable.spec  # PyInstaller 打包配置（便携版）
 ├── version_info.txt           # exe 文件属性（版本/产品名）
 ├── app.ico                    # 图标
 ├── scripts/make_icon.py       # 生成图标
@@ -218,7 +222,17 @@ biliblil_and_douyin_app/
 
 ---
 
-## 🐞 本次整理修复的问题
+## 🐞 已修复的问题
+
+### v3.2.2
+
+| # | 问题 | 修复方式 |
+| --- | --- | --- |
+| 22 | 打包版「自动登录」必然失败：Edge 与 Chrome 都报 `No module named 'selenium.webdriver.edge.webdriver'`。selenium 4 的 `webdriver.Edge/Chrome` 是惰性导入，PyInstaller 静态分析看不到这些子模块，打包时被丢掉 | `app/bilibili.py` 改为按全路径 import `selenium.webdriver.{edge,chrome}.webdriver`；两个 spec 用 `collect_submodules("selenium")` 收集全部子模块，并补上 Selenium Manager 二进制 |
+| 23 | 抖音解析过一次后手动关掉浏览器窗口，之后每次解析都报「监听接口失败：浏览器未开启或已关闭」——复用的 `ChromiumPage` 早已断开 | 复用前用 `page.states.is_alive` 探活，失效就重建；解析中途断线还会自动重启浏览器并重试一次，错误信息里带上原因 |
+| 24 | Selenium Manager 由 Python 进程直接调用，`SE_CACHE_PATH` 只写进了驱动进程环境，受限账户仍会去写 `~/.cache/selenium` 报「拒绝访问」 | 启动浏览器前把 `SE_CACHE_PATH` / `SE_AVOID_STATS` 同步到当前进程环境，驱动缓存真正落到 `.runtime/selenium` |
+
+### v3.2.1 重构
 
 重构前的版本是一个 1100 行的单文件脚本，本次做了模块化拆分，并修掉了下面这些坑：
 
@@ -289,6 +303,9 @@ ruff check app tests web_app.py
 
 **Q：自动登录窗口一直不弹出？**
 默认会等待 `SELENIUM_LOGIN_TIMEOUT`（300 秒）。若浏览器进程被安全软件拦截，日志里会给出具体原因；也可以在 `.env` 里把 `SELENIUM_LOGIN_TIMEOUT` 调小后重试。
+
+**Q：抖音解析过一次后，把浏览器窗口关掉再解析，就报「浏览器未开启或已关闭」？**
+v3.2.2 起会先探活再复用：发现窗口已被关掉会自动重启浏览器（日志显示「浏览器窗口已关闭，正在重新启动 ...」）；解析中途断开也会自动重启并重试一次。旧版遇到这种情况只能重启整个程序。
 
 **Q：下载时报 `Permission denied` / 提示目录不可写？**
 程序在下载前会先做一次真实的写入探测。如果你选的目录被 Windows「受控文件夹访问」（勒索软件防护）或杀毒软件保护——`Downloads`、`Desktop`、`Documents` 默认就在保护范围内——会**自动回退到程序默认下载目录**并在日志里提示。想直接存到这些目录，请在「Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护 → 受控文件夹访问」里把 `VideoDownloader.exe` 加入允许列表，或在程序里「浏览」选一个普通目录（如 `D:\videos`）。

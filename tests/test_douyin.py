@@ -140,12 +140,17 @@ class AwemeFieldTests(unittest.TestCase):
 
 
 class FakeListen:
-    def __init__(self, packet):
+    def __init__(self, packet, error: Exception | None = None):
         self.packet = packet
+        self.error = error
         self.started = None
         self.stopped = False
+        self.start_count = 0
 
     def start(self, *args, **kwargs):
+        self.start_count += 1
+        if self.error is not None:
+            raise self.error
         self.started = (args, kwargs)
 
     def wait(self, *args, **kwargs):
@@ -165,17 +170,38 @@ class FakePacket:
         self.response = FakeResponse(body)
 
 
+class FakeStates:
+    def __init__(self, alive: bool = True):
+        self.is_alive = alive
+
+
+class FakeBrowser:
+    def __init__(self, tab_ids: tuple[str, ...] = ("tab-1",)):
+        self.tab_ids = tab_ids
+
+
 class FakePage:
-    def __init__(self, packet=None, html=""):
-        self.listen = FakeListen(packet)
+    def __init__(self, packet=None, html="", alive=True, tab_id="tab-1",
+                 tab_ids=("tab-1",), listen_error: Exception | None = None):
+        self.listen = FakeListen(packet, error=listen_error)
         self.html = html
         self.visited = None
+        self.quit_called = False
+        self.states = FakeStates(alive)
+        self.browser = FakeBrowser(tab_ids)
+        self.tab_id = tab_id
 
     def get(self, url):
         self.visited = url
 
     def wait(self):
         return None
+
+    def quit(self):
+        self.quit_called = True
+
+
+CLOSED_ERROR = RuntimeError("浏览器未开启或已关闭。\n版本: 4.1.1.4")
 
 
 class BrowserFlowTests(AppTestCase):
@@ -199,6 +225,74 @@ class BrowserFlowTests(AppTestCase):
         self.patch(douyin, "_get_page", lambda: page)
         with self.assertRaises(DouyinError):
             douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+
+
+class PageLifecycleTests(AppTestCase):
+    """浏览器窗口被关掉之后，复用缓存页面必须先探活再重建。"""
+
+    def test_alive_page_is_reused(self):
+        page = FakePage()
+        self.patch(douyin, "_page", page)
+        self.patch(douyin, "_build_page", self._fail_build)
+        self.assertIs(douyin._get_page(), page)
+
+    @staticmethod
+    def _fail_build():
+        raise AssertionError("页面可用时不应该重建浏览器")
+
+    def test_closed_browser_is_rebuilt(self):
+        dead = FakePage(alive=False)
+        fresh = FakePage()
+        self.patch(douyin, "_page", dead)
+        self.patch(douyin, "_build_page", lambda: fresh)
+
+        self.assertIs(douyin._get_page(), fresh)
+        self.assertTrue(dead.quit_called)
+        self.assertIs(douyin._page, fresh)
+
+    def test_closed_tab_is_detected(self):
+        page = FakePage(tab_id="tab-1", tab_ids=("tab-2",))
+        self.assertFalse(douyin._page_alive(page))
+
+    def test_page_alive_requires_live_states(self):
+        self.assertFalse(douyin._page_alive(None))
+        self.assertFalse(douyin._page_alive(FakePage(alive=False)))
+        self.assertTrue(douyin._page_alive(FakePage()))
+
+
+class BrowserRecoveryTests(AppTestCase):
+    """解析过程中浏览器失效时自动重启并重试一次。"""
+
+    def test_retries_after_browser_closed(self):
+        dead = FakePage(listen_error=CLOSED_ERROR)
+        healthy = FakePage(packet=FakePacket({"aweme_detail": AWEME}))
+        pages = [dead, healthy]
+        self.patch(douyin, "_get_page", lambda: pages.pop(0))
+        self.patch(douyin, "close_browser", lambda: None)
+
+        info = douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertEqual(info.aweme_id, AWEME["aweme_id"])
+        self.assertEqual(healthy.visited, "https://v.douyin.com/abc/")
+
+    def test_reports_clear_error_after_second_failure(self):
+        pages = [FakePage(listen_error=CLOSED_ERROR), FakePage(listen_error=CLOSED_ERROR)]
+        self.patch(douyin, "_get_page", lambda: pages.pop(0))
+        self.patch(douyin, "close_browser", lambda: None)
+
+        with self.assertRaises(DouyinError) as ctx:
+            douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        message = str(ctx.exception)
+        self.assertIn("浏览器", message)
+        self.assertIn("浏览器未开启或已关闭", message)
+
+    def test_reports_browser_start_failure(self):
+        def broken_page():
+            raise RuntimeError("浏览器连接失败。\n地址: 127.0.0.1:1")
+
+        self.patch(douyin, "_get_page", broken_page)
+        with self.assertRaises(DouyinError) as ctx:
+            douyin.fetch_video_info("https://v.douyin.com/abc/", "douyin")
+        self.assertIn("浏览器启动失败", str(ctx.exception))
 
 
 if __name__ == "__main__":

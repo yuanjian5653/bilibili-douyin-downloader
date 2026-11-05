@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -450,6 +451,20 @@ def _service_env(temp_dir: Path) -> dict[str, str]:
     return env
 
 
+def _apply_selenium_env(env: dict[str, str]) -> None:
+    """把 selenium 自己的环境变量同步到当前进程。
+
+    selenium 4 会由 **Python 进程** 直接调用 Selenium Manager 下载驱动，它读的
+    是本进程的环境变量，而不是 ``Service(env=...)`` 里传给驱动进程的那一份。
+    不同步的话 ``SE_CACHE_PATH`` 不生效，受限账户下仍会尝试写
+    ``~/.cache/selenium`` 并报 ``拒绝访问``，浏览器升级后就下载不到新驱动。
+    """
+    for key in ("SE_CACHE_PATH", "SE_AVOID_STATS"):
+        value = env.get(key)
+        if value:
+            os.environ[key] = value
+
+
 # ===================== 浏览器 / 驱动版本检测 =====================
 _DRIVER_VERSION_CACHE: dict[str, tuple[float, str | None]] = {}
 
@@ -546,6 +561,30 @@ def _browser_args(profile_dir: Path, temp_dir: Path, headless: bool = False) -> 
     return args
 
 
+def _import_driver_classes(browser: str) -> tuple[type, type, type]:
+    """按全路径导入 selenium 的 ``WebDriver`` / ``Options`` / ``Service``。
+
+    selenium 4.x 的 ``selenium.webdriver`` 包是惰性导入（``_LAZY_IMPORTS`` +
+    ``__getattr__``）：写 ``from selenium import webdriver; webdriver.Edge`` 时
+    模块名只是字典里的字符串，PyInstaller 的静态分析看不到，打包后会报
+    ``No module named 'selenium.webdriver.edge.webdriver'``。这里显式 import
+    具体模块，源码运行和打包运行的行为才一致。
+    """
+    prefix = f"selenium.webdriver.{browser}"
+    try:
+        webdriver_module = importlib.import_module(f"{prefix}.webdriver")
+        options_module = importlib.import_module(f"{prefix}.options")
+        service_module = importlib.import_module(f"{prefix}.service")
+    except ImportError as exc:
+        missing = getattr(exc, "name", None) or exc
+        raise BiliError(
+            f"selenium 缺少 {browser} 驱动模块（{missing}）。自动登录需要完整的 "
+            "selenium：请执行 pip install -U --force-reinstall selenium 后重试；"
+            "如果是打包版，请更新到最新版本，或改为手动粘贴 Cookie。"
+        ) from exc
+    return webdriver_module.WebDriver, options_module.Options, service_module.Service
+
+
 def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
     """依次尝试「本地 msedgedriver → Selenium Manager → Chrome」。
 
@@ -555,11 +594,8 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
 
     返回可用的 WebDriver；全部失败时抛出 :class:`BiliError`，消息带上每次尝试的原因。
     """
-    from selenium import webdriver
-    from selenium.webdriver.edge.options import Options as EdgeOptions
-    from selenium.webdriver.edge.service import Service as EdgeService
-
     env = _service_env(temp_dir)
+    _apply_selenium_env(env)
     local_driver = Path(resource_path("msedgedriver.exe"))
     edge_version = detect_edge_version()
     local_version = _driver_version(local_driver) if local_driver.exists() else None
@@ -575,55 +611,71 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
     if detected:
         print("[bili] 检测到浏览器/驱动版本：" + "，".join(detected), flush=True)
 
+    # 驱动模块缺失时不要直接放弃：Edge 不行还能试 Chrome，失败原因统一回显
+    import_errors: list[str] = []
+    edge_classes: tuple[type, type, type] | None = None
+    chrome_classes: tuple[type, type, type] | None = None
+    try:
+        edge_classes = _import_driver_classes("edge")
+    except BiliError as exc:
+        import_errors.append(str(exc))
+    try:
+        chrome_classes = _import_driver_classes("chrome")
+    except BiliError as exc:
+        import_errors.append(str(exc))
+    if edge_classes is None and chrome_classes is None:
+        raise BiliError(
+            "所有浏览器都启动失败，请手动粘贴 Cookie。原因：" + "；".join(import_errors)
+        )
+
     attempts: list[tuple[str, Callable[[list[str]], object]]] = []
 
-    def edge_options(extra: list[str]) -> EdgeOptions:
-        options = EdgeOptions()
-        for arg in _browser_args(profile_dir, temp_dir, headless) + extra:
-            options.add_argument(arg)
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        return options
+    if edge_classes is not None:
+        EdgeWebDriver, EdgeOptions, EdgeService = edge_classes
 
-    local_attempt = None
-    if local_driver.exists():
-        local_attempt = (
-            "Edge（本地 msedgedriver）",
-            lambda extra: webdriver.Edge(
-                options=edge_options(extra),
-                service=EdgeService(executable_path=str(local_driver), env=env),
+        def edge_options(extra: list[str]) -> EdgeOptions:
+            options = EdgeOptions()
+            for arg in _browser_args(profile_dir, temp_dir, headless) + extra:
+                options.add_argument(arg)
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            return options
+
+        local_attempt = None
+        if local_driver.exists():
+            local_attempt = (
+                "Edge（本地 msedgedriver）",
+                lambda extra: EdgeWebDriver(
+                    options=edge_options(extra),
+                    service=EdgeService(executable_path=str(local_driver), env=env),
+                ),
+            )
+
+        sm_attempt = (
+            "Edge（Selenium Manager）",
+            lambda extra: EdgeWebDriver(
+                options=edge_options(extra), service=EdgeService(env=env)
             ),
         )
 
-    sm_attempt = (
-        "Edge（Selenium Manager）",
-        lambda extra: webdriver.Edge(
-            options=edge_options(extra), service=EdgeService(env=env)
-        ),
-    )
-
-    if local_attempt is not None:
-        if _same_major(local_version, edge_version) is False:
-            # 浏览器自动升级后本地驱动会过期，此时让 Selenium Manager 去下载匹配版本
-            print(
-                f"[bili] 本地驱动（{local_version}）与 Edge（{edge_version}）主版本不一致，"
-                "改为由 Selenium Manager 获取匹配驱动",
-                flush=True,
-            )
-            attempts.extend([sm_attempt, local_attempt])
+        if local_attempt is not None:
+            if _same_major(local_version, edge_version) is False:
+                # 浏览器自动升级后本地驱动会过期，此时让 Selenium Manager 去下载匹配版本
+                print(
+                    f"[bili] 本地驱动（{local_version}）与 Edge（{edge_version}）主版本不一致，"
+                    "改为由 Selenium Manager 获取匹配驱动",
+                    flush=True,
+                )
+                attempts.extend([sm_attempt, local_attempt])
+            else:
+                # 版本一致或无法判断时优先本地驱动：快，且不依赖网络
+                attempts.extend([local_attempt, sm_attempt])
         else:
-            # 版本一致或无法判断时优先本地驱动：快，且不依赖网络
-            attempts.extend([local_attempt, sm_attempt])
-    else:
-        attempts.append(sm_attempt)
+            attempts.append(sm_attempt)
 
-    try:
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
-        from selenium.webdriver.chrome.service import Service as ChromeService
-    except ImportError:  # pragma: no cover - 理论不会发生
-        ChromeOptions = None  # type: ignore[assignment]
+    if chrome_classes is not None:
+        ChromeWebDriver, ChromeOptions, ChromeService = chrome_classes
 
-    if ChromeOptions is not None:
-        def chrome_options(extra: list[str]) -> "ChromeOptions":
+        def chrome_options(extra: list[str]) -> ChromeOptions:
             options = ChromeOptions()
             for arg in _browser_args(profile_dir, temp_dir, headless) + extra:
                 options.add_argument(arg)
@@ -632,7 +684,7 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
 
         attempts.append((
             "Chrome（Selenium Manager）",
-            lambda extra: webdriver.Chrome(
+            lambda extra: ChromeWebDriver(
                 options=chrome_options(extra), service=ChromeService(env=env)
             ),
         ))
@@ -660,7 +712,10 @@ def _start_browser(profile_dir: Path, temp_dir: Path, headless: bool = False):
             print(f"[bili] 已启动浏览器：{label}", flush=True)
             return driver
 
-    raise BiliError("所有浏览器都启动失败，请手动粘贴 Cookie。原因：" + "；".join(errors))
+    raise BiliError(
+        "所有浏览器都启动失败，请手动粘贴 Cookie。原因："
+        + "；".join(import_errors + errors)
+    )
 
 
 def login_via_selenium(timeout: int = SELENIUM_LOGIN_TIMEOUT) -> RequestsCookieJar | None:
@@ -676,7 +731,7 @@ def login_via_selenium(timeout: int = SELENIUM_LOGIN_TIMEOUT) -> RequestsCookieJ
     登录超时返回 ``None``。
     """
     try:
-        from selenium import webdriver  # noqa: F401
+        import selenium  # noqa: F401
     except ImportError as exc:
         raise BiliError("未安装 selenium，无法自动登录（pip install selenium）") from exc
 

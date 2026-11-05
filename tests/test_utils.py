@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 import unittest
-from pathlib import Path
 
 from app import config
 from app.utils import (

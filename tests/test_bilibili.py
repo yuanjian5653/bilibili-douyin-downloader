@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import types
 import unittest
+from unittest import mock
 
 from app import bilibili
 from app.bilibili import (
@@ -300,6 +304,18 @@ class BrowserDirTests(AppTestCase):
         self.assertEqual(env["SE_CACHE_PATH"], str(self.tmp_path / "selenium"))
         self.assertTrue((self.tmp_path / "selenium").is_dir())
 
+    def test_apply_selenium_env_syncs_process_env(self):
+        """Selenium Manager 由 Python 进程直接调用，缓存路径必须写进 os.environ。"""
+        cache = str(self.tmp_path / "cache")
+        env = {"SE_CACHE_PATH": cache, "SE_AVOID_STATS": "true"}
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SE_CACHE_PATH", None)
+            bilibili._apply_selenium_env(env)
+            self.assertEqual(os.environ["SE_CACHE_PATH"], cache)
+            self.assertEqual(os.environ["SE_AVOID_STATS"], "true")
+            bilibili._apply_selenium_env({})
+            self.assertEqual(os.environ["SE_CACHE_PATH"], cache)
+
     def test_browser_args_include_own_profile(self):
         profile = self.tmp_path / "profile"
         temp = self.tmp_path / "temp"
@@ -340,6 +356,137 @@ class DriverVersionTests(AppTestCase):
 
     def test_driver_version_missing_file(self):
         self.assertIsNone(bilibili._driver_version(self.tmp_path / "nope.exe"))
+
+
+class SeleniumStartupTests(AppTestCase):
+    """selenium 启动流程：必须走显式子模块导入（伪造模块，不启动浏览器）。"""
+
+    class FakeOptions:
+        def __init__(self):
+            self.args = []
+            self.experimental = None
+            self.timeout = None
+
+        def add_argument(self, arg, *args):
+            self.args.append(arg)
+
+        def add_experimental_option(self, name, value):
+            self.experimental = (name, value)
+
+    class FakeService:
+        def __init__(self, executable_path=None, env=None):
+            self.executable_path = executable_path
+            self.env = env
+
+    class FakeDriver:
+        def __init__(self, options=None, service=None):
+            self.options = options
+            self.service = service
+            self.url = None
+            self.quit_called = False
+
+        def set_page_load_timeout(self, value):
+            self.timeout = value
+
+        def get(self, url):
+            self.url = url
+
+        def quit(self):
+            self.quit_called = True
+
+    def _install_selenium(self, drivers: dict[str, type]) -> None:
+        """把伪造的 selenium 模块塞进 ``sys.modules``；drivers 是 浏览器 -> WebDriver。"""
+        modules = {
+            "selenium": types.ModuleType("selenium"),
+            "selenium.webdriver": types.ModuleType("selenium.webdriver"),
+        }
+        for browser, driver in drivers.items():
+            prefix = f"selenium.webdriver.{browser}"
+            modules[prefix] = types.ModuleType(prefix)
+            webdriver_module = types.ModuleType(f"{prefix}.webdriver")
+            webdriver_module.WebDriver = driver
+            options_module = types.ModuleType(f"{prefix}.options")
+            options_module.Options = self.FakeOptions
+            service_module = types.ModuleType(f"{prefix}.service")
+            service_module.Service = self.FakeService
+            modules[f"{prefix}.webdriver"] = webdriver_module
+            modules[f"{prefix}.options"] = options_module
+            modules[f"{prefix}.service"] = service_module
+        patcher = mock.patch.dict(sys.modules, modules)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _prepare(self):
+        self.patch(bilibili, "detect_edge_version", lambda: "156.0.4314.58")
+        self.patch(bilibili, "detect_chrome_version", lambda: None)
+        # 项目根目录里的旧 msedgedriver.exe 不参与测试
+        self.patch(bilibili, "resource_path", lambda name: str(self.tmp_path / name))
+        return self.tmp_path / "profile", self.tmp_path / "temp"
+
+    def test_import_driver_classes_returns_fakes(self):
+        self._install_selenium({"edge": self.FakeDriver})
+        webdriver_cls, options_cls, service_cls = bilibili._import_driver_classes("edge")
+        self.assertIs(webdriver_cls, self.FakeDriver)
+        self.assertIs(options_cls, self.FakeOptions)
+        self.assertIs(service_cls, self.FakeService)
+
+    def test_start_browser_uses_full_module_path(self):
+        self._install_selenium({"edge": self.FakeDriver, "chrome": self.FakeDriver})
+        profile, temp = self._prepare()
+
+        driver = bilibili._start_browser(profile, temp)
+        self.assertIsInstance(driver, self.FakeDriver)
+        self.assertEqual(driver.url, "about:blank")
+        self.assertTrue(any(arg.startswith("--user-data-dir=") for arg in driver.options.args))
+
+    def test_falls_back_to_chrome_when_edge_fails(self):
+        class BrokenDriver(self.FakeDriver):
+            def __init__(self, options=None, service=None):
+                raise RuntimeError("session not created: edge boom")
+
+        self._install_selenium({"edge": BrokenDriver, "chrome": self.FakeDriver})
+        profile, temp = self._prepare()
+
+        driver = bilibili._start_browser(profile, temp)
+        self.assertIsInstance(driver, self.FakeDriver)
+        self.assertNotIsInstance(driver, BrokenDriver)
+
+    def test_reports_every_failure_reason(self):
+        calls: list[list[str]] = []
+
+        class BrokenDriver(self.FakeDriver):
+            def __init__(self, options=None, service=None):
+                calls.append(options.args)
+                raise RuntimeError("session not created: tab crashed")
+
+        self._install_selenium({"edge": BrokenDriver, "chrome": BrokenDriver})
+        profile, temp = self._prepare()
+
+        with self.assertRaises(BiliError) as ctx:
+            bilibili._start_browser(profile, temp)
+        message = str(ctx.exception)
+        self.assertIn("Edge", message)
+        self.assertIn("Chrome", message)
+        self.assertIn("tab crashed", message)
+        self.assertIn("--no-sandbox", message)
+        self.assertEqual(len(calls), 4)  # Edge / Edge+no-sandbox / Chrome / Chrome+no-sandbox
+
+    def test_missing_module_reports_actionable_error(self):
+        error = ImportError("No module named 'selenium.webdriver.edge.webdriver'")
+        with mock.patch("importlib.import_module", side_effect=error):
+            with self.assertRaises(BiliError) as ctx:
+                bilibili._import_driver_classes("edge")
+        message = str(ctx.exception)
+        self.assertIn("pip install", message)
+        self.assertIn("手动粘贴 Cookie", message)
+
+    def test_start_browser_reports_missing_modules(self):
+        profile, temp = self._prepare()
+        error = ImportError("No module named 'selenium.webdriver.edge.webdriver'")
+        with mock.patch("importlib.import_module", side_effect=error):
+            with self.assertRaises(BiliError) as ctx:
+                bilibili._start_browser(profile, temp)
+        self.assertIn("手动粘贴 Cookie", str(ctx.exception))
 
 
 if __name__ == "__main__":
